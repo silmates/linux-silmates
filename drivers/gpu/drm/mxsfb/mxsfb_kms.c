@@ -8,9 +8,11 @@
  * Copyright (C) 2008 Embedded Alley Solutions, Inc All Rights Reserved.
  */
 
+#include <linux/busfreq-imx.h>
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/media-bus-format.h>
 #include <linux/pm_runtime.h>
 #include <linux/spinlock.h>
 
@@ -19,12 +21,12 @@
 #include <drm/drm_bridge.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_encoder.h>
-#include <drm/drm_fb_cma_helper.h>
+#include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_plane.h>
-#include <drm/drm_plane_helper.h>
 #include <drm/drm_vblank.h>
 
 #include "mxsfb_drv.h"
@@ -53,9 +55,19 @@ static void mxsfb_set_formats(struct mxsfb_drm_private *mxsfb,
 	struct drm_device *drm = mxsfb->drm;
 	const u32 format = mxsfb->crtc.primary->state->fb->format->format;
 	u32 ctrl, ctrl1;
+	bool bgr_format = true;
 
-	DRM_DEV_DEBUG_DRIVER(drm->dev, "Using bus_format: 0x%08X\n",
-			     bus_format);
+	/* Do some clean-up that we might have from a previous mode */
+	ctrl = CTRL_SHIFT_DIR(1);
+	ctrl |= CTRL_SHIFT_NUM(0xff);
+	ctrl |= CTRL_SET_WORD_LENGTH(0xff);
+	ctrl |= CTRL_DF16;
+	ctrl |= CTRL_SET_BUS_WIDTH(0xff);
+	writel(ctrl, mxsfb->base + LCDC_CTRL + REG_CLR);
+	if (mxsfb->devdata->has_ctrl2)
+		writel(CTRL2_ODD_LINE_PATTERN(CTRL2_LINE_PATTERN_CLR) |
+		       CTRL2_EVEN_LINE_PATTERN(CTRL2_LINE_PATTERN_CLR),
+		       mxsfb->base + LCDC_V4_CTRL2 + REG_CLR);
 
 	ctrl = CTRL_BYPASS_COUNT | CTRL_MASTER;
 
@@ -63,19 +75,69 @@ static void mxsfb_set_formats(struct mxsfb_drm_private *mxsfb,
 	ctrl1 = readl(mxsfb->base + LCDC_CTRL1);
 	ctrl1 &= CTRL1_CUR_FRAME_DONE_IRQ_EN | CTRL1_CUR_FRAME_DONE_IRQ;
 
+	DRM_DEV_DEBUG_DRIVER(drm->dev, "Setting up %p4cc mode\n", &format);
+
 	switch (format) {
-	case DRM_FORMAT_RGB565:
-		dev_dbg(drm->dev, "Setting up RGB565 mode\n");
-		ctrl |= CTRL_WORD_LENGTH_16;
+	case DRM_FORMAT_BGR565: /* BG16 */
+		if (!mxsfb->devdata->has_ctrl2)
+			goto err;
+		writel(CTRL2_ODD_LINE_PATTERN(CTRL2_LINE_PATTERN_BGR) |
+			CTRL2_EVEN_LINE_PATTERN(CTRL2_LINE_PATTERN_BGR),
+			mxsfb->base + LCDC_V4_CTRL2 + REG_SET);
+		fallthrough;
+	case DRM_FORMAT_RGB565: /* RG16 */
+		ctrl |= CTRL_SET_WORD_LENGTH(0);
+		ctrl &= ~CTRL_DF16;
 		ctrl1 |= CTRL1_SET_BYTE_PACKAGING(0xf);
 		break;
-	case DRM_FORMAT_XRGB8888:
-		dev_dbg(drm->dev, "Setting up XRGB8888 mode\n");
-		ctrl |= CTRL_WORD_LENGTH_24;
+	case DRM_FORMAT_XBGR1555: /* XB15 */
+		fallthrough;
+	case DRM_FORMAT_ABGR1555: /* AB15 */
+		if (!mxsfb->devdata->has_ctrl2)
+			goto err;
+		writel(CTRL2_ODD_LINE_PATTERN(CTRL2_LINE_PATTERN_BGR) |
+		       CTRL2_EVEN_LINE_PATTERN(CTRL2_LINE_PATTERN_BGR),
+		       mxsfb->base + LCDC_V4_CTRL2 + REG_SET);
+		fallthrough;
+	case DRM_FORMAT_XRGB1555: /* XR15 */
+		fallthrough;
+	case DRM_FORMAT_ARGB1555: /* AR15 */
+		ctrl |= CTRL_SET_WORD_LENGTH(0);
+		ctrl |= CTRL_DF16;
+		ctrl1 |= CTRL1_SET_BYTE_PACKAGING(0xf);
+		break;
+	case DRM_FORMAT_RGBX8888: /* RX24 */
+		fallthrough;
+	case DRM_FORMAT_RGBA8888: /* RA24 */
+		/* RGBX - > 0RGB */
+		ctrl |= CTRL_SHIFT_DIR(1);
+		ctrl |= CTRL_SHIFT_NUM(8);
+		bgr_format = false;
+		fallthrough;
+	case DRM_FORMAT_XBGR8888: /* XB24 */
+		fallthrough;
+	case DRM_FORMAT_ABGR8888: /* AB24 */
+		if (bgr_format) {
+			if (!mxsfb->devdata->has_ctrl2)
+				goto err;
+			writel(CTRL2_ODD_LINE_PATTERN(CTRL2_LINE_PATTERN_BGR) |
+			       CTRL2_EVEN_LINE_PATTERN(CTRL2_LINE_PATTERN_BGR),
+			       mxsfb->base + LCDC_V4_CTRL2 + REG_SET);
+		}
+		fallthrough;
+	case DRM_FORMAT_XRGB8888: /* XR24 */
+		fallthrough;
+	case DRM_FORMAT_ARGB8888: /* AR24 */
+		ctrl |= CTRL_SET_WORD_LENGTH(3);
 		/* Do not use packed pixels = one pixel per word instead. */
 		ctrl1 |= CTRL1_SET_BYTE_PACKAGING(0x7);
 		break;
+	default:
+		goto err;
 	}
+
+	DRM_DEV_DEBUG_DRIVER(drm->dev, "Using bus_format: 0x%08X\n",
+			     bus_format);
 
 	switch (bus_format) {
 	case MEDIA_BUS_FMT_RGB565_1X16:
@@ -88,12 +150,67 @@ static void mxsfb_set_formats(struct mxsfb_drm_private *mxsfb,
 		ctrl |= CTRL_BUS_WIDTH_24;
 		break;
 	default:
-		dev_err(drm->dev, "Unknown media bus format %d\n", bus_format);
+		dev_err(drm->dev, "Unknown media bus format 0x%x\n", bus_format);
 		break;
 	}
 
 	writel(ctrl1, mxsfb->base + LCDC_CTRL1);
-	writel(ctrl, mxsfb->base + LCDC_CTRL);
+	writel(ctrl, mxsfb->base + LCDC_CTRL + REG_SET);
+
+	return;
+err:
+	dev_err(drm->dev, "Unhandled pixel format: %p4cc\n", &format);
+}
+
+static void mxsfb_set_mode(struct mxsfb_drm_private *mxsfb, u32 bus_flags)
+{
+	struct drm_display_mode *m = &mxsfb->crtc.state->adjusted_mode;
+	u32 vdctrl0, vsync_pulse_len, hsync_pulse_len;
+
+	writel(TRANSFER_COUNT_SET_VCOUNT(m->crtc_vdisplay) |
+	       TRANSFER_COUNT_SET_HCOUNT(m->crtc_hdisplay),
+	       mxsfb->base + mxsfb->devdata->transfer_count);
+
+	vsync_pulse_len = m->crtc_vsync_end - m->crtc_vsync_start;
+
+	vdctrl0 = VDCTRL0_ENABLE_PRESENT |	/* Always in DOTCLOCK mode */
+		  VDCTRL0_VSYNC_PERIOD_UNIT |
+		  VDCTRL0_VSYNC_PULSE_WIDTH_UNIT |
+		  VDCTRL0_SET_VSYNC_PULSE_WIDTH(vsync_pulse_len);
+	if (m->flags & DRM_MODE_FLAG_PHSYNC)
+		vdctrl0 |= VDCTRL0_HSYNC_ACT_HIGH;
+	if (m->flags & DRM_MODE_FLAG_PVSYNC)
+		vdctrl0 |= VDCTRL0_VSYNC_ACT_HIGH;
+	/* Make sure Data Enable is high active by default */
+	if (!(bus_flags & DRM_BUS_FLAG_DE_LOW))
+		vdctrl0 |= VDCTRL0_ENABLE_ACT_HIGH;
+	/*
+	 * DRM_BUS_FLAG_PIXDATA_DRIVE_ defines are controller centric,
+	 * controllers VDCTRL0_DOTCLK is display centric.
+	 * Drive on positive edge       -> display samples on falling edge
+	 * DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE -> VDCTRL0_DOTCLK_ACT_FALLING
+	 */
+	if (bus_flags & DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE)
+		vdctrl0 |= VDCTRL0_DOTCLK_ACT_FALLING;
+
+	writel(vdctrl0, mxsfb->base + LCDC_VDCTRL0);
+
+	/* Frame length in lines. */
+	writel(m->crtc_vtotal, mxsfb->base + LCDC_VDCTRL1);
+
+	/* Line length in units of clocks or pixels. */
+	hsync_pulse_len = m->crtc_hsync_end - m->crtc_hsync_start;
+	writel(set_hsync_pulse_width(mxsfb, hsync_pulse_len) |
+	       VDCTRL2_SET_HSYNC_PERIOD(m->crtc_htotal),
+	       mxsfb->base + LCDC_VDCTRL2);
+
+	writel(SET_HOR_WAIT_CNT(m->crtc_htotal - m->crtc_hsync_start) |
+	       SET_VERT_WAIT_CNT(m->crtc_vtotal - m->crtc_vsync_start),
+	       mxsfb->base + LCDC_VDCTRL3);
+
+	writel(SET_DOTCLK_H_VALID_DATA_CNT(m->hdisplay),
+	       mxsfb->base + LCDC_VDCTRL4);
+
 }
 
 static void mxsfb_enable_controller(struct mxsfb_drm_private *mxsfb)
@@ -111,6 +228,9 @@ static void mxsfb_enable_controller(struct mxsfb_drm_private *mxsfb)
 		reg |= CTRL2_SET_OUTSTANDING_REQS_16;
 		writel(reg, mxsfb->base + LCDC_V4_CTRL2);
 	}
+
+	/* De-assert LCD Reset bit */
+	writel(CTRL_LCD_RESET, mxsfb->base + LCDC_CTRL1 + REG_SET);
 
 	/* If it was disabled, re-enable the mode again */
 	writel(CTRL_DOTCLK_MODE, mxsfb->base + LCDC_CTRL + REG_SET);
@@ -156,6 +276,11 @@ static void mxsfb_disable_controller(struct mxsfb_drm_private *mxsfb)
 {
 	u32 reg;
 
+	writel(CTRL_RUN, mxsfb->base + LCDC_CTRL + REG_CLR);
+
+	/* Assert LCD Reset bit */
+	writel(CTRL_LCD_RESET, mxsfb->base + LCDC_CTRL1 + REG_CLR);
+
 	/*
 	 * Even if we disable the controller here, it will still continue
 	 * until its FIFOs are running out of data
@@ -191,6 +316,12 @@ static int mxsfb_reset_block(struct mxsfb_drm_private *mxsfb)
 {
 	int ret;
 
+	/*
+	 * It seems, you can't re-program the controller if it is still
+	 * running. This may lead to shifted pictures (FIFO issue?), so
+	 * first stop the controller and drain its FIFOs.
+	 */
+
 	ret = clear_poll_bit(mxsfb->base + LCDC_CTRL, CTRL_SFTRST);
 	if (ret)
 		return ret;
@@ -201,43 +332,9 @@ static int mxsfb_reset_block(struct mxsfb_drm_private *mxsfb)
 	if (ret)
 		return ret;
 
-	return clear_poll_bit(mxsfb->base + LCDC_CTRL, CTRL_CLKGATE);
-}
-
-static dma_addr_t mxsfb_get_fb_paddr(struct drm_plane *plane)
-{
-	struct drm_framebuffer *fb = plane->state->fb;
-	struct drm_gem_cma_object *gem;
-
-	if (!fb)
-		return 0;
-
-	gem = drm_fb_cma_get_gem_obj(fb, 0);
-	if (!gem)
-		return 0;
-
-	return gem->paddr;
-}
-
-static void mxsfb_crtc_mode_set_nofb(struct mxsfb_drm_private *mxsfb,
-				     const u32 bus_format)
-{
-	struct drm_device *drm = mxsfb->crtc.dev;
-	struct drm_display_mode *m = &mxsfb->crtc.state->adjusted_mode;
-	u32 bus_flags = mxsfb->connector->display_info.bus_flags;
-	u32 vdctrl0, vsync_pulse_len, hsync_pulse_len;
-	int err;
-
-	/*
-	 * It seems, you can't re-program the controller if it is still
-	 * running. This may lead to shifted pictures (FIFO issue?), so
-	 * first stop the controller and drain its FIFOs.
-	 */
-
-	/* Mandatory eLCDIF reset as per the Reference Manual */
-	err = mxsfb_reset_block(mxsfb);
-	if (err)
-		return;
+	ret = clear_poll_bit(mxsfb->base + LCDC_CTRL, CTRL_CLKGATE);
+	if (ret)
+		return ret;
 
 	/* Clear the FIFOs */
 	writel(CTRL1_FIFO_CLEAR, mxsfb->base + LCDC_CTRL1 + REG_SET);
@@ -248,12 +345,22 @@ static void mxsfb_crtc_mode_set_nofb(struct mxsfb_drm_private *mxsfb,
 	if (mxsfb->devdata->has_overlay)
 		writel(0, mxsfb->base + LCDC_AS_CTRL);
 
-	mxsfb_set_formats(mxsfb, bus_format);
+	return 0;
+}
 
-	clk_set_rate(mxsfb->clk, m->crtc_clock * 1000);
+static void mxsfb_crtc_mode_set_nofb(struct mxsfb_drm_private *mxsfb,
+				     struct drm_bridge_state *bridge_state,
+				     const u32 bus_format)
+{
+	struct drm_device *drm = mxsfb->crtc.dev;
+	struct drm_display_mode *m = &mxsfb->crtc.state->adjusted_mode;
+	u32 bus_flags = mxsfb->connector->display_info.bus_flags;
+	int err;
 
 	if (mxsfb->bridge && mxsfb->bridge->timings)
 		bus_flags = mxsfb->bridge->timings->input_bus_flags;
+	else if (bridge_state)
+		bus_flags = bridge_state->input_bus_cfg.flags;
 
 	DRM_DEV_DEBUG_DRIVER(drm->dev, "Pixel clock: %dkHz (actual: %dkHz)\n",
 			     m->crtc_clock,
@@ -262,49 +369,38 @@ static void mxsfb_crtc_mode_set_nofb(struct mxsfb_drm_private *mxsfb,
 			     bus_flags);
 	DRM_DEV_DEBUG_DRIVER(drm->dev, "Mode flags: 0x%08X\n", m->flags);
 
-	writel(TRANSFER_COUNT_SET_VCOUNT(m->crtc_vdisplay) |
-	       TRANSFER_COUNT_SET_HCOUNT(m->crtc_hdisplay),
-	       mxsfb->base + mxsfb->devdata->transfer_count);
+	/* Mandatory eLCDIF reset as per the Reference Manual */
+	err = mxsfb_reset_block(mxsfb);
+	if (err)
+		return;
 
-	vsync_pulse_len = m->crtc_vsync_end - m->crtc_vsync_start;
+	mxsfb_set_formats(mxsfb, bus_format);
 
-	vdctrl0 = VDCTRL0_ENABLE_PRESENT |	/* Always in DOTCLOCK mode */
-		  VDCTRL0_VSYNC_PERIOD_UNIT |
-		  VDCTRL0_VSYNC_PULSE_WIDTH_UNIT |
-		  VDCTRL0_SET_VSYNC_PULSE_WIDTH(vsync_pulse_len);
-	if (m->flags & DRM_MODE_FLAG_PHSYNC)
-		vdctrl0 |= VDCTRL0_HSYNC_ACT_HIGH;
-	if (m->flags & DRM_MODE_FLAG_PVSYNC)
-		vdctrl0 |= VDCTRL0_VSYNC_ACT_HIGH;
-	/* Make sure Data Enable is high active by default */
-	if (!(bus_flags & DRM_BUS_FLAG_DE_LOW))
-		vdctrl0 |= VDCTRL0_ENABLE_ACT_HIGH;
-	/*
-	 * DRM_BUS_FLAG_PIXDATA_DRIVE_ defines are controller centric,
-	 * controllers VDCTRL0_DOTCLK is display centric.
-	 * Drive on positive edge       -> display samples on falling edge
-	 * DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE -> VDCTRL0_DOTCLK_ACT_FALLING
-	 */
-	if (bus_flags & DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE)
-		vdctrl0 |= VDCTRL0_DOTCLK_ACT_FALLING;
+	clk_set_rate(mxsfb->clk, m->crtc_clock * 1000);
 
-	writel(vdctrl0, mxsfb->base + LCDC_VDCTRL0);
+	mxsfb_set_mode(mxsfb, bus_flags);
+}
 
-	/* Frame length in lines. */
-	writel(m->crtc_vtotal, mxsfb->base + LCDC_VDCTRL1);
+static enum drm_mode_status mxsfb_crtc_mode_valid(struct drm_crtc *crtc,
+					   const struct drm_display_mode *mode)
+{
+	struct mxsfb_drm_private *mxsfb = to_mxsfb_drm_private(crtc->dev);
+	u32 bpp;
+	u64 bw;
 
-	/* Line length in units of clocks or pixels. */
-	hsync_pulse_len = m->crtc_hsync_end - m->crtc_hsync_start;
-	writel(set_hsync_pulse_width(mxsfb, hsync_pulse_len) |
-	       VDCTRL2_SET_HSYNC_PERIOD(m->crtc_htotal),
-	       mxsfb->base + LCDC_VDCTRL2);
+	if (!crtc->primary->state->fb)
+		bpp = 32;
+	else
+		bpp = crtc->primary->state->fb->format->cpp[0] * 8;
 
-	writel(SET_HOR_WAIT_CNT(m->crtc_htotal - m->crtc_hsync_start) |
-	       SET_VERT_WAIT_CNT(m->crtc_vtotal - m->crtc_vsync_start),
-	       mxsfb->base + LCDC_VDCTRL3);
+	bw = (u64)mode->clock * 1000;
+	bw = bw * mode->hdisplay * mode->vdisplay * (bpp / 8);
+	bw = div_u64(bw, mode->htotal * mode->vtotal);
 
-	writel(SET_DOTCLK_H_VALID_DATA_CNT(m->hdisplay),
-	       mxsfb->base + LCDC_VDCTRL4);
+	if (mxsfb->max_bw && bw > mxsfb->max_bw)
+		return MODE_BAD;
+
+	return MODE_OK;
 }
 
 static int mxsfb_crtc_atomic_check(struct drm_crtc *crtc,
@@ -346,11 +442,14 @@ static void mxsfb_crtc_atomic_enable(struct drm_crtc *crtc,
 				     struct drm_atomic_state *state)
 {
 	struct mxsfb_drm_private *mxsfb = to_mxsfb_drm_private(crtc->dev);
-	struct drm_bridge_state *bridge_state;
+	struct drm_plane_state *new_pstate = drm_atomic_get_new_plane_state(state,
+									    crtc->primary);
+	struct drm_bridge_state *bridge_state = NULL;
 	struct drm_device *drm = mxsfb->drm;
 	u32 bus_format = 0;
-	dma_addr_t paddr;
+	dma_addr_t dma_addr;
 
+	request_bus_freq(BUS_FREQ_HIGH);
 	pm_runtime_get_sync(drm->dev);
 	mxsfb_enable_axi_clk(mxsfb);
 
@@ -361,7 +460,17 @@ static void mxsfb_crtc_atomic_enable(struct drm_crtc *crtc,
 		bridge_state =
 			drm_atomic_get_new_bridge_state(state,
 							mxsfb->bridge);
-		bus_format = bridge_state->input_bus_cfg.format;
+		if (!bridge_state)
+			bus_format = MEDIA_BUS_FMT_FIXED;
+		else
+			bus_format = bridge_state->input_bus_cfg.format;
+
+		if (bus_format == MEDIA_BUS_FMT_FIXED) {
+			dev_warn_once(drm->dev,
+				      "Bridge does not provide bus format, assuming MEDIA_BUS_FMT_RGB888_1X24.\n"
+				      "Please fix bridge driver by handling atomic_get_input_bus_fmts.\n");
+			bus_format = MEDIA_BUS_FMT_RGB888_1X24;
+		}
 	}
 
 	/* If there is no bridge, use bus format from connector */
@@ -372,13 +481,13 @@ static void mxsfb_crtc_atomic_enable(struct drm_crtc *crtc,
 	if (!bus_format)
 		bus_format = MEDIA_BUS_FMT_RGB888_1X24;
 
-	mxsfb_crtc_mode_set_nofb(mxsfb, bus_format);
+	mxsfb_crtc_mode_set_nofb(mxsfb, bridge_state, bus_format);
 
 	/* Write cur_buf as well to avoid an initial corrupt frame */
-	paddr = mxsfb_get_fb_paddr(crtc->primary);
-	if (paddr) {
-		writel(paddr, mxsfb->base + mxsfb->devdata->cur_buf);
-		writel(paddr, mxsfb->base + mxsfb->devdata->next_buf);
+	dma_addr = drm_fb_dma_get_gem_addr(new_pstate->fb, new_pstate, 0);
+	if (dma_addr) {
+		writel(dma_addr, mxsfb->base + mxsfb->devdata->cur_buf);
+		writel(dma_addr, mxsfb->base + mxsfb->devdata->next_buf);
 	}
 
 	mxsfb_enable_controller(mxsfb);
@@ -405,6 +514,7 @@ static void mxsfb_crtc_atomic_disable(struct drm_crtc *crtc,
 
 	mxsfb_disable_axi_clk(mxsfb);
 	pm_runtime_put_sync(drm->dev);
+	release_bus_freq(BUS_FREQ_HIGH);
 }
 
 static int mxsfb_crtc_enable_vblank(struct drm_crtc *crtc)
@@ -427,7 +537,43 @@ static void mxsfb_crtc_disable_vblank(struct drm_crtc *crtc)
 	writel(CTRL1_CUR_FRAME_DONE_IRQ, mxsfb->base + LCDC_CTRL1 + REG_CLR);
 }
 
+static int mxsfb_crtc_set_crc_source(struct drm_crtc *crtc, const char *source)
+{
+	struct mxsfb_drm_private *mxsfb;
+
+	if (!crtc)
+		return -ENODEV;
+
+	mxsfb = to_mxsfb_drm_private(crtc->dev);
+
+	if (source && strcmp(source, "auto") == 0)
+		mxsfb->crc_active = true;
+	else if (!source)
+		mxsfb->crc_active = false;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+
+static int mxsfb_crtc_verify_crc_source(struct drm_crtc *crtc,
+					const char *source, size_t *values_cnt)
+{
+	if (!crtc)
+		return -ENODEV;
+
+	if (source && strcmp(source, "auto") != 0) {
+		DRM_DEBUG_DRIVER("Unknown CRC source %s for %s\n",
+				 source, crtc->name);
+		return -EINVAL;
+	}
+
+	*values_cnt = 1;
+	return 0;
+}
+
 static const struct drm_crtc_helper_funcs mxsfb_crtc_helper_funcs = {
+	.mode_valid = mxsfb_crtc_mode_valid,
 	.atomic_check = mxsfb_crtc_atomic_check,
 	.atomic_flush = mxsfb_crtc_atomic_flush,
 	.atomic_enable = mxsfb_crtc_atomic_enable,
@@ -443,6 +589,19 @@ static const struct drm_crtc_funcs mxsfb_crtc_funcs = {
 	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
 	.enable_vblank = mxsfb_crtc_enable_vblank,
 	.disable_vblank = mxsfb_crtc_disable_vblank,
+};
+
+static const struct drm_crtc_funcs mxsfb_crtc_with_crc_funcs = {
+	.reset = drm_atomic_helper_crtc_reset,
+	.destroy = drm_crtc_cleanup,
+	.set_config = drm_atomic_helper_set_config,
+	.page_flip = drm_atomic_helper_page_flip,
+	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
+	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
+	.enable_vblank = mxsfb_crtc_enable_vblank,
+	.disable_vblank = mxsfb_crtc_disable_vblank,
+	.set_crc_source = mxsfb_crtc_set_crc_source,
+	.verify_crc_source = mxsfb_crtc_verify_crc_source,
 };
 
 /* -----------------------------------------------------------------------------
@@ -464,25 +623,120 @@ static int mxsfb_plane_atomic_check(struct drm_plane *plane,
 									     plane);
 	struct mxsfb_drm_private *mxsfb = to_mxsfb_drm_private(plane->dev);
 	struct drm_crtc_state *crtc_state;
+	struct drm_framebuffer *fb = plane_state->fb;
+	struct drm_plane_state *old_state = plane->state;
+	struct drm_framebuffer *old_fb = old_state->fb;
 
 	crtc_state = drm_atomic_get_new_crtc_state(state,
 						   &mxsfb->crtc);
 
+	if (plane->type == DRM_PLANE_TYPE_PRIMARY && old_fb && fb &&
+	    old_fb->pitches[0] != fb->pitches[0])
+		crtc_state->mode_changed = true;
+
 	return drm_atomic_helper_check_plane_state(plane_state, crtc_state,
-						   DRM_PLANE_HELPER_NO_SCALING,
-						   DRM_PLANE_HELPER_NO_SCALING,
+						   DRM_PLANE_NO_SCALING,
+						   DRM_PLANE_NO_SCALING,
 						   false, true);
+}
+
+static void mxsfb_set_fb_hcrop(struct mxsfb_drm_private *mxsfb, u32 src_w, u32 fb_w)
+{
+	u32 mask_cnt;
+	u32 vdctrl3, vdctrl4, transfer_count;
+
+	if (src_w == fb_w) {
+		writel(0x0, mxsfb->base + HW_EPDC_PIGEON_12_0);
+		writel(0x0, mxsfb->base + HW_EPDC_PIGEON_12_1);
+
+		return;
+	}
+
+	transfer_count = readl(mxsfb->base + LCDC_V4_TRANSFER_COUNT);
+	transfer_count &= ~TRANSFER_COUNT_SET_HCOUNT(0xffff);
+	transfer_count |= TRANSFER_COUNT_SET_HCOUNT(fb_w);
+	writel(transfer_count, mxsfb->base + LCDC_V4_TRANSFER_COUNT);
+
+	vdctrl4 = readl(mxsfb->base + LCDC_VDCTRL4);
+	vdctrl4 &= ~SET_DOTCLK_H_VALID_DATA_CNT(0x3ffff);
+	vdctrl4 |= SET_DOTCLK_H_VALID_DATA_CNT(fb_w);
+	writel(vdctrl4, mxsfb->base + LCDC_VDCTRL4);
+
+	/* configure related pigeon registers */
+	vdctrl3  = readl(mxsfb->base + LCDC_VDCTRL3);
+	mask_cnt = GET_HOR_WAIT_CNT(vdctrl3) - 5;
+
+	writel(PIGEON_12_0_SET_STATE_MASK(0x24) |
+	       PIGEON_12_0_SET_MASK_CNT(mask_cnt) |
+	       PIGEON_12_0_SET_MASK_CNT_SEL(0x6) |
+	       PIGEON_12_0_POL_ACTIVE_LOW |
+	       PIGEON_12_0_EN,
+	       mxsfb->base + HW_EPDC_PIGEON_12_0);
+
+	writel(PIGEON_12_1_SET_CLR_CNT(src_w) |
+	       PIGEON_12_1_SET_SET_CNT(0x0),
+	       mxsfb->base + HW_EPDC_PIGEON_12_1);
+
+	writel(0, mxsfb->base + HW_EPDC_PIGEON_12_2);
 }
 
 static void mxsfb_plane_primary_atomic_update(struct drm_plane *plane,
 					      struct drm_atomic_state *state)
 {
 	struct mxsfb_drm_private *mxsfb = to_mxsfb_drm_private(plane->dev);
-	dma_addr_t paddr;
+	struct drm_plane_state *new_pstate = drm_atomic_get_new_plane_state(state,
+									    plane);
+	struct drm_plane_state *old_pstate = drm_atomic_get_old_plane_state(state,
+									    plane);
+	struct drm_framebuffer *fb = new_pstate->fb;
+	struct drm_framebuffer *old_fb = old_pstate->fb;
+	dma_addr_t dma_addr;
+	u32 src_off, src_w, stride, cpp = 0;
 
-	paddr = mxsfb_get_fb_paddr(plane);
-	if (paddr)
-		writel(paddr, mxsfb->base + mxsfb->devdata->next_buf);
+	dma_addr = drm_fb_dma_get_gem_addr(new_pstate->fb, new_pstate, 0);
+	if (!dma_addr)
+		return;
+
+	/* We will use the 'has_ctrl2' to assume IP version larger than 4 */
+	if (mxsfb->devdata->has_ctrl2) {
+		cpp = fb->format->cpp[0];
+		src_off = (new_pstate->src_y >> 16) * fb->pitches[0] +
+			  (new_pstate->src_x >> 16) * cpp;
+		dma_addr += fb->offsets[0] + src_off;
+	}
+
+	writel(dma_addr, mxsfb->base + mxsfb->devdata->next_buf);
+
+	if (mxsfb->devdata->has_ctrl2 &&
+	    unlikely(drm_atomic_crtc_needs_modeset(new_pstate->crtc->state))) {
+		stride = DIV_ROUND_UP(fb->pitches[0], cpp);
+		src_w = new_pstate->src_w >> 16;
+		mxsfb_set_fb_hcrop(mxsfb, src_w, stride);
+	}
+
+	/* Update format if changed */
+	if (old_fb && old_fb->format->format != fb->format->format) {
+		u32 bus_format = 0;
+		struct drm_bridge_state *bridge_state;
+
+		/* If there is a bridge attached to the LCDIF, use its bus format */
+		if (mxsfb->bridge) {
+			bridge_state =
+				drm_atomic_get_new_bridge_state(state,
+								mxsfb->bridge);
+			bus_format = bridge_state->input_bus_cfg.format;
+		}
+
+		/* If there is no bridge, use bus format from connector */
+		if (!bus_format && mxsfb->connector->display_info.num_bus_formats)
+			bus_format = mxsfb->connector->display_info.bus_formats[0];
+
+		/* If all else fails, default to RGB888_1X24 */
+		if (!bus_format)
+			bus_format = MEDIA_BUS_FMT_RGB888_1X24;
+
+		mxsfb_set_formats(mxsfb, bus_format);
+	}
 }
 
 static void mxsfb_plane_overlay_atomic_update(struct drm_plane *plane,
@@ -493,11 +747,11 @@ static void mxsfb_plane_overlay_atomic_update(struct drm_plane *plane,
 	struct mxsfb_drm_private *mxsfb = to_mxsfb_drm_private(plane->dev);
 	struct drm_plane_state *new_pstate = drm_atomic_get_new_plane_state(state,
 									    plane);
-	dma_addr_t paddr;
+	dma_addr_t dma_addr;
 	u32 ctrl;
 
-	paddr = mxsfb_get_fb_paddr(plane);
-	if (!paddr) {
+	dma_addr = drm_fb_dma_get_gem_addr(new_pstate->fb, new_pstate, 0);
+	if (!dma_addr) {
 		writel(0, mxsfb->base + LCDC_AS_CTRL);
 		return;
 	}
@@ -508,16 +762,16 @@ static void mxsfb_plane_overlay_atomic_update(struct drm_plane *plane,
 	 * is understood, live with the 16 initial invalid pixels on the first
 	 * line and start 64 bytes within the framebuffer.
 	 */
-	paddr += 64;
+	dma_addr += 64;
 
-	writel(paddr, mxsfb->base + LCDC_AS_NEXT_BUF);
+	writel(dma_addr, mxsfb->base + LCDC_AS_NEXT_BUF);
 
 	/*
 	 * If the plane was previously disabled, write LCDC_AS_BUF as well to
 	 * provide the first buffer.
 	 */
 	if (!old_pstate->fb)
-		writel(paddr, mxsfb->base + LCDC_AS_BUF);
+		writel(dma_addr, mxsfb->base + LCDC_AS_BUF);
 
 	ctrl = AS_CTRL_AS_ENABLE | AS_CTRL_ALPHA(255);
 
@@ -575,9 +829,24 @@ static const struct drm_plane_funcs mxsfb_plane_funcs = {
 	.atomic_destroy_state	= drm_atomic_helper_plane_destroy_state,
 };
 
-static const uint32_t mxsfb_primary_plane_formats[] = {
+static const uint32_t mxsfb_primary_plane_formats_v3[] = {
 	DRM_FORMAT_RGB565,
 	DRM_FORMAT_XRGB8888,
+};
+
+static const uint32_t mxsfb_primary_plane_formats_v4[] = {
+	DRM_FORMAT_RGB565,
+	DRM_FORMAT_BGR565,
+	DRM_FORMAT_XRGB8888,
+	DRM_FORMAT_ARGB8888,
+	DRM_FORMAT_XBGR8888,
+	DRM_FORMAT_ABGR8888,
+	DRM_FORMAT_RGBX8888,
+	DRM_FORMAT_RGBA8888,
+	DRM_FORMAT_ARGB1555,
+	DRM_FORMAT_XRGB1555,
+	DRM_FORMAT_ABGR1555,
+	DRM_FORMAT_XBGR1555,
 };
 
 static const uint32_t mxsfb_overlay_plane_formats[] = {
@@ -603,14 +872,23 @@ int mxsfb_kms_init(struct mxsfb_drm_private *mxsfb)
 {
 	struct drm_encoder *encoder = &mxsfb->encoder;
 	struct drm_crtc *crtc = &mxsfb->crtc;
+	uint32_t const *plane_formats;
+	unsigned int format_count;
 	int ret;
+
+	if (!mxsfb->devdata->has_ctrl2) {
+		plane_formats = &mxsfb_primary_plane_formats_v3[0];
+		format_count = ARRAY_SIZE(mxsfb_primary_plane_formats_v3);
+	} else {
+		plane_formats = &mxsfb_primary_plane_formats_v4[0];
+		format_count = ARRAY_SIZE(mxsfb_primary_plane_formats_v4);
+	}
 
 	drm_plane_helper_add(&mxsfb->planes.primary,
 			     &mxsfb_plane_primary_helper_funcs);
 	ret = drm_universal_plane_init(mxsfb->drm, &mxsfb->planes.primary, 1,
 				       &mxsfb_plane_funcs,
-				       mxsfb_primary_plane_formats,
-				       ARRAY_SIZE(mxsfb_primary_plane_formats),
+				       plane_formats, format_count,
 				       mxsfb_modifiers, DRM_PLANE_TYPE_PRIMARY,
 				       NULL);
 	if (ret)
@@ -631,9 +909,16 @@ int mxsfb_kms_init(struct mxsfb_drm_private *mxsfb)
 	}
 
 	drm_crtc_helper_add(crtc, &mxsfb_crtc_helper_funcs);
-	ret = drm_crtc_init_with_planes(mxsfb->drm, crtc,
-					&mxsfb->planes.primary, NULL,
-					&mxsfb_crtc_funcs, NULL);
+	if (mxsfb->devdata->has_crc32) {
+		ret = drm_crtc_init_with_planes(mxsfb->drm, crtc,
+						&mxsfb->planes.primary, NULL,
+						&mxsfb_crtc_with_crc_funcs,
+						NULL);
+	} else {
+		ret = drm_crtc_init_with_planes(mxsfb->drm, crtc,
+						&mxsfb->planes.primary, NULL,
+						&mxsfb_crtc_funcs, NULL);
+	}
 	if (ret)
 		return ret;
 

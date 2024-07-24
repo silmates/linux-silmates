@@ -10,9 +10,13 @@
 #include <linux/irqchip/chained_irq.h>
 #include <linux/irqdomain.h>
 #include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
+#include <linux/pm_runtime.h>
 #include <linux/spinlock.h>
+#include <linux/pm_domain.h>
+#include <linux/reset.h>
 
 #define CTRL_STRIDE_OFF(_t, _r)	(_t * 4 * _r)
 #define CHANCTRL		0x0
@@ -34,12 +38,48 @@ struct irqsteer_data {
 	int			channel;
 	struct irq_domain	*domain;
 	u32			*saved_reg;
+
+	struct device		*dev;
+	struct device		*pd_csi;
+	struct device		*pd_isi;
 };
 
 static int imx_irqsteer_get_reg_index(struct irqsteer_data *data,
 				      unsigned long irqnum)
 {
 	return (data->reg_num - irqnum / 32 - 1);
+}
+
+static int imx_irqsteer_attach_pd(struct irqsteer_data *data)
+{
+	struct device *dev = data->dev;
+	struct device_link *link;
+
+	data->pd_csi = dev_pm_domain_attach_by_name(dev, "pd_csi");
+	if (IS_ERR(data->pd_csi ))
+		return PTR_ERR(data->pd_csi);
+	else if (!data->pd_csi)
+		return 0;
+
+	link = device_link_add(dev, data->pd_csi,
+			DL_FLAG_STATELESS |
+			DL_FLAG_PM_RUNTIME);
+	if (IS_ERR(link))
+		return PTR_ERR(link);
+
+	data->pd_isi = dev_pm_domain_attach_by_name(dev, "pd_isi_ch0");
+	if (IS_ERR(data->pd_isi))
+		return PTR_ERR(data->pd_isi);
+	else if (!data->pd_isi)
+		return 0;
+
+	link = device_link_add(dev, data->pd_isi,
+			DL_FLAG_STATELESS |
+			DL_FLAG_PM_RUNTIME);
+	if (IS_ERR(link))
+		return PTR_ERR(link);
+
+	return 0;
 }
 
 static void imx_irqsteer_irq_unmask(struct irq_data *d)
@@ -70,7 +110,7 @@ static void imx_irqsteer_irq_mask(struct irq_data *d)
 	raw_spin_unlock_irqrestore(&data->lock, flags);
 }
 
-static struct irq_chip imx_irqsteer_irq_chip = {
+static const struct irq_chip imx_irqsteer_irq_chip = {
 	.name		= "irqsteer",
 	.irq_mask	= imx_irqsteer_irq_mask,
 	.irq_unmask	= imx_irqsteer_irq_unmask,
@@ -148,6 +188,7 @@ static int imx_irqsteer_probe(struct platform_device *pdev)
 	if (!data)
 		return -ENOMEM;
 
+	data->dev = &pdev->dev;
 	data->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(data->regs)) {
 		dev_err(&pdev->dev, "failed to initialize reg\n");
@@ -158,6 +199,14 @@ static int imx_irqsteer_probe(struct platform_device *pdev)
 	if (IS_ERR(data->ipg_clk))
 		return dev_err_probe(&pdev->dev, PTR_ERR(data->ipg_clk),
 				     "failed to get ipg clk\n");
+
+	ret = imx_irqsteer_attach_pd(data);
+	if (ret < 0 && ret == -EPROBE_DEFER)
+		return ret;
+
+	ret = device_reset(&pdev->dev);
+	if (ret == -EPROBE_DEFER)
+		return ret;
 
 	raw_spin_lock_init(&data->lock);
 
@@ -175,7 +224,7 @@ static int imx_irqsteer_probe(struct platform_device *pdev)
 	data->irq_count = DIV_ROUND_UP(irqs_num, 64);
 	data->reg_num = irqs_num / 32;
 
-	if (IS_ENABLED(CONFIG_PM_SLEEP)) {
+	if (IS_ENABLED(CONFIG_PM)) {
 		data->saved_reg = devm_kzalloc(&pdev->dev,
 					sizeof(u32) * data->reg_num,
 					GFP_KERNEL);
@@ -189,6 +238,8 @@ static int imx_irqsteer_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	pm_runtime_set_active(&pdev->dev);
+
 	/* steer all IRQs into configured channel */
 	writel_relaxed(BIT(data->channel), data->regs + CHANCTRL);
 
@@ -199,6 +250,7 @@ static int imx_irqsteer_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto out;
 	}
+	irq_domain_set_pm_device(data->domain, &pdev->dev);
 
 	if (!data->irq_count || data->irq_count > CHAN_MAX_OUTPUT_INT) {
 		ret = -EINVAL;
@@ -218,6 +270,8 @@ static int imx_irqsteer_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, data);
+
+	pm_runtime_enable(&pdev->dev);
 
 	return 0;
 out:
@@ -241,7 +295,7 @@ static int imx_irqsteer_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_PM
 static void imx_irqsteer_save_regs(struct irqsteer_data *data)
 {
 	int i;
@@ -288,13 +342,17 @@ static int imx_irqsteer_resume(struct device *dev)
 #endif
 
 static const struct dev_pm_ops imx_irqsteer_pm_ops = {
-	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(imx_irqsteer_suspend, imx_irqsteer_resume)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				      pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(imx_irqsteer_suspend,
+			   imx_irqsteer_resume, NULL)
 };
 
 static const struct of_device_id imx_irqsteer_dt_ids[] = {
 	{ .compatible = "fsl,imx-irqsteer", },
 	{},
 };
+MODULE_DEVICE_TABLE(of, imx_irqsteer_dt_ids);
 
 static struct platform_driver imx_irqsteer_driver = {
 	.driver = {
@@ -305,4 +363,5 @@ static struct platform_driver imx_irqsteer_driver = {
 	.probe = imx_irqsteer_probe,
 	.remove = imx_irqsteer_remove,
 };
-builtin_platform_driver(imx_irqsteer_driver);
+module_platform_driver(imx_irqsteer_driver);
+MODULE_LICENSE("GPL v2");

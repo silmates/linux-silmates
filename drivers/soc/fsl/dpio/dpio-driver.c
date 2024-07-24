@@ -27,6 +27,11 @@ MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Freescale Semiconductor, Inc");
 MODULE_DESCRIPTION("DPIO Driver");
 
+#define PROT_NORMAL_NS		(PTE_TYPE_PAGE | PTE_AF | PTE_PXN | PTE_UXN | PTE_DIRTY | PTE_WRITE | PTE_ATTRINDX(MT_NORMAL))
+
+#define ioremap_cache_ns(addr, size)	ioremap_prot((addr), (size), PROT_NORMAL_NS)
+
+
 struct dpio_priv {
 	struct dpaa2_io *io;
 };
@@ -88,7 +93,7 @@ static void unregister_dpio_irq_handlers(struct fsl_mc_device *dpio_dev)
 	irq = dpio_dev->irqs[0];
 
 	/* clear the affinity hint */
-	irq_set_affinity_hint(irq->msi_desc->irq, NULL);
+	irq_set_affinity_hint(irq->virq, NULL);
 }
 
 static int register_dpio_irq_handlers(struct fsl_mc_device *dpio_dev, int cpu)
@@ -98,7 +103,7 @@ static int register_dpio_irq_handlers(struct fsl_mc_device *dpio_dev, int cpu)
 
 	irq = dpio_dev->irqs[0];
 	error = devm_request_irq(&dpio_dev->dev,
-				 irq->msi_desc->irq,
+				 irq->virq,
 				 dpio_irq_handler,
 				 0,
 				 dev_name(&dpio_dev->dev),
@@ -111,10 +116,10 @@ static int register_dpio_irq_handlers(struct fsl_mc_device *dpio_dev, int cpu)
 	}
 
 	/* set the affinity hint */
-	if (irq_set_affinity_hint(irq->msi_desc->irq, cpumask_of(cpu)))
+	if (irq_set_affinity_hint(irq->virq, cpumask_of(cpu)))
 		dev_err(&dpio_dev->dev,
 			"irq_set_affinity failed irq %d cpu %d\n",
-			irq->msi_desc->irq, cpu);
+			irq->virq, cpu);
 
 	return 0;
 }
@@ -162,6 +167,7 @@ static int dpaa2_dpio_probe(struct fsl_mc_device *dpio_dev)
 		goto err_get_attr;
 	}
 	desc.qman_version = dpio_attrs.qbman_version;
+	desc.qman_clk = dpio_attrs.clk;
 
 	err = dpio_enable(dpio_dev->mc_io, 0, dpio_dev->mc_handle);
 	if (err) {
@@ -197,13 +203,11 @@ static int dpaa2_dpio_probe(struct fsl_mc_device *dpio_dev)
 	if (dpio_dev->obj_desc.region_count < 3) {
 		/* No support for DDR backed portals, use classic mapping */
 		/*
-		 * Set the CENA regs to be the cache inhibited area of the
-		 * portal to avoid coherency issues if a user migrates to
-		 * another core.
+		 * Set the CENA regs to be the cache enabled area of the portal to
+		 * achieve the best performance.
 		 */
-		desc.regs_cena = devm_memremap(dev, dpio_dev->regions[1].start,
-					resource_size(&dpio_dev->regions[1]),
-					MEMREMAP_WC);
+		desc.regs_cena = ioremap_cache_ns(dpio_dev->regions[0].start,
+						resource_size(&dpio_dev->regions[0]));
 	} else {
 		desc.regs_cena = devm_memremap(dev, dpio_dev->regions[2].start,
 					resource_size(&dpio_dev->regions[2]),
@@ -211,7 +215,7 @@ static int dpaa2_dpio_probe(struct fsl_mc_device *dpio_dev)
 	}
 
 	if (IS_ERR(desc.regs_cena)) {
-		dev_err(dev, "devm_memremap failed\n");
+		dev_err(dev, "ioremap_cache_ns failed\n");
 		err = PTR_ERR(desc.regs_cena);
 		goto err_allocate_irqs;
 	}

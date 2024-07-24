@@ -7,6 +7,7 @@
 
 #include <linux/device.h>
 #include <linux/of.h>
+#include <linux/of_gpio.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/slab.h>
 
@@ -129,7 +130,7 @@ static int dt_to_map_one_config(struct pinctrl *p,
 		np_pctldev = of_get_next_parent(np_pctldev);
 		if (!np_pctldev || of_node_is_root(np_pctldev)) {
 			of_node_put(np_pctldev);
-			ret = driver_deferred_probe_check_state(p->dev);
+			ret = -ENODEV;
 			/* keep deferring if modules are enabled */
 			if (IS_ENABLED(CONFIG_MODULES) && !allow_default && ret < 0)
 				ret = -EPROBE_DEFER;
@@ -193,6 +194,46 @@ static int dt_remember_dummy_state(struct pinctrl *p, const char *statename)
 	return dt_remember_or_free_map(p, statename, NULL, map, 1);
 }
 
+static int dt_gpio_assert_pinctrl(struct pinctrl *p)
+{
+	struct device_node *np = p->dev->of_node;
+	enum of_gpio_flags flags;
+	int gpio;
+	int index = 0;
+	int ret;
+
+	if (!of_find_property(np, "pinctrl-assert-gpios", NULL))
+		return 0; /* Missing the property, so nothing to be done */
+
+	for (;; index++) {
+		gpio = of_get_named_gpio_flags(np, "pinctrl-assert-gpios",
+					       index, &flags);
+		if (gpio < 0) {
+			if (gpio == -EPROBE_DEFER)
+				return gpio;
+			break; /* End of the phandle list */
+		}
+
+		if (!gpio_is_valid(gpio))
+			return -EINVAL;
+
+		ret = devm_gpio_request_one(p->dev, gpio, GPIOF_OUT_INIT_LOW,
+					    NULL);
+		if (ret < 0)
+			return ret;
+
+		if (flags & OF_GPIO_ACTIVE_LOW)
+			continue;
+
+		if (gpio_cansleep(gpio))
+			gpio_set_value_cansleep(gpio, 1);
+		else
+			gpio_set_value(gpio, 1);
+	}
+
+	return 0;
+}
+
 int pinctrl_dt_to_map(struct pinctrl *p, struct pinctrl_dev *pctldev)
 {
 	struct device_node *np = p->dev->of_node;
@@ -213,6 +254,12 @@ int pinctrl_dt_to_map(struct pinctrl *p, struct pinctrl_dev *pctldev)
 		return 0;
 	}
 
+	ret = dt_gpio_assert_pinctrl(p);
+	if (ret) {
+		dev_dbg(p->dev, "failed to assert pinctrl setting: %d\n", ret);
+		return ret;
+	}
+
 	/* We may store pointers to property names within the node */
 	of_node_get(np);
 
@@ -220,6 +267,8 @@ int pinctrl_dt_to_map(struct pinctrl *p, struct pinctrl_dev *pctldev)
 	for (state = 0; ; state++) {
 		/* Retrieve the pinctrl-* property */
 		propname = kasprintf(GFP_KERNEL, "pinctrl-%d", state);
+		if (!propname)
+			return -ENOMEM;
 		prop = of_find_property(np, propname, &size);
 		kfree(propname);
 		if (!prop) {

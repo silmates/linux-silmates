@@ -48,6 +48,27 @@
 #define ECC_DIS_ARMV8_CH2	0x80000000
 #define ECC_DIS_LS1088A		0x40000000
 
+/* errata for lx2160 */
+#define RCWSR29_BASE			0x1E00170
+#define SERDES2_BASE			0x1EB0000
+#define DEVICE_CONFIG_REG_BASE		0x1E00000
+#define SERDES2_LNAX_RX_CR(x)		(0x840 + (0x100 * (x)))
+#define SERDES2_LNAX_RX_CBR(x)		(0x8C0 + (0x100 * (x)))
+#define SYS_VER_REG			0xA4
+#define LN_RX_RST			0x80000010
+#define LN_RX_RST_DONE			0x3
+#define LN_RX_MASK			0xf
+#define LX2160A_VER1			0x1
+
+#define SERDES2_LNAA 0
+#define SERDES2_LNAB 1
+#define SERDES2_LNAC 2
+#define SERDES2_LNAD 3
+#define SERDES2_LNAE 4
+#define SERDES2_LNAF 5
+#define SERDES2_LNAG 6
+#define SERDES2_LNAH 7
+
 enum ahci_qoriq_type {
 	AHCI_LS1021A,
 	AHCI_LS1028A,
@@ -77,7 +98,7 @@ static const struct of_device_id ahci_qoriq_of_match[] = {
 	{ .compatible = "fsl,ls1088a-ahci", .data = (void *)AHCI_LS1088A},
 	{ .compatible = "fsl,ls2088a-ahci", .data = (void *)AHCI_LS2088A},
 	{ .compatible = "fsl,lx2160a-ahci", .data = (void *)AHCI_LX2160A},
-	{},
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, ahci_qoriq_of_match);
 
@@ -86,6 +107,126 @@ static const struct acpi_device_id ahci_qoriq_acpi_match[] = {
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, ahci_qoriq_acpi_match);
+
+static void fsl_sata_errata_379364(bool select)
+{
+	int val = 0;
+	void __iomem *rcw_base = NULL;
+	void __iomem *serdes_base = NULL;
+	void __iomem *dev_con_base = NULL;
+
+	if (select) {
+		dev_con_base = ioremap(DEVICE_CONFIG_REG_BASE, PAGE_SIZE);
+		if (!dev_con_base)
+			return;
+
+		val = (readl(dev_con_base + SYS_VER_REG) & GENMASK(7, 4)) >> 4;
+		if (val != LX2160A_VER1)
+			goto dev_unmap;
+
+		/*
+		 * Add few msec delay.
+		 * Check for corresponding serdes lane RST_DONE .
+		 * apply lane reset.
+		 */
+
+		serdes_base = ioremap(SERDES2_BASE, PAGE_SIZE);
+		if (!serdes_base)
+			goto dev_unmap;
+
+		rcw_base = ioremap(RCWSR29_BASE, PAGE_SIZE);
+		if (!rcw_base)
+			goto serdes_unmap;
+
+		msleep(20);
+
+		val = (readl(rcw_base) & GENMASK(25, 21)) >> 21;
+
+		switch (val) {
+		case 1:
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAC)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAC));
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAD)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAD));
+			break;
+
+		case 4:
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAG)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAG));
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAH)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAH));
+			break;
+
+		case 5:
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAE)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAE));
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAF)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAF));
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAG)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAG));
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAH)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAH));
+			break;
+
+		case 8:
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAC)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAC));
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAD)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAD));
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAE)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAE));
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAF)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAF));
+			break;
+
+		case 12:
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAG)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAG));
+			if ((readl(serdes_base + SERDES2_LNAX_RX_CBR(SERDES2_LNAH)) &
+				LN_RX_MASK) != LN_RX_RST_DONE)
+				writel(LN_RX_RST, serdes_base +
+					SERDES2_LNAX_RX_CR(SERDES2_LNAH));
+			break;
+
+		default:
+			break;
+		}
+	} else {
+		return;
+	}
+
+	iounmap(rcw_base);
+serdes_unmap:
+	iounmap(serdes_base);
+dev_unmap:
+	iounmap(dev_con_base);
+}
 
 static int ahci_qoriq_hardreset(struct ata_link *link, unsigned int *class,
 			  unsigned long deadline)
@@ -102,8 +243,7 @@ static int ahci_qoriq_hardreset(struct ata_link *link, unsigned int *class,
 	bool online;
 	int rc;
 	bool ls1021a_workaround = (qoriq_priv->type == AHCI_LS1021A);
-
-	DPRINTK("ENTER\n");
+	bool lx2160a_workaround = (qoriq_priv->type == AHCI_LX2160A);
 
 	hpriv->stop_engine(ap);
 
@@ -125,8 +265,10 @@ static int ahci_qoriq_hardreset(struct ata_link *link, unsigned int *class,
 
 	/* clear D2H reception area to properly wait for D2H FIS */
 	ata_tf_init(link->device, &tf);
-	tf.command = ATA_BUSY;
+	tf.status = ATA_BUSY;
 	ata_tf_to_fis(&tf, 0, 0, d2h_fis);
+
+	fsl_sata_errata_379364(lx2160a_workaround);
 
 	rc = sata_link_hardreset(link, timing, deadline, &online,
 				 ahci_check_ready);
@@ -146,8 +288,6 @@ static int ahci_qoriq_hardreset(struct ata_link *link, unsigned int *class,
 
 	if (online)
 		*class = ahci_dev_classify(ap);
-
-	DPRINTK("EXIT, rc=%d, class=%u\n", rc, *class);
 	return rc;
 }
 
@@ -284,14 +424,12 @@ static int ahci_qoriq_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	if (of_id)
-		qoriq_priv->type = (enum ahci_qoriq_type)of_id->data;
+		qoriq_priv->type = (unsigned long)of_id->data;
 	else
 		qoriq_priv->type = (enum ahci_qoriq_type)acpi_id->driver_data;
 
 	if (unlikely(!ecc_initialized)) {
-		res = platform_get_resource_byname(pdev,
-						   IORESOURCE_MEM,
-						   "sata-ecc");
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 		if (res) {
 			qoriq_priv->ecc_addr =
 				devm_ioremap_resource(dev, res);

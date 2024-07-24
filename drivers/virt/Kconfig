@@ -13,6 +13,17 @@ menuconfig VIRT_DRIVERS
 
 if VIRT_DRIVERS
 
+config VMGENID
+	tristate "Virtual Machine Generation ID driver"
+	default y
+	depends on ACPI
+	help
+	  Say Y here to use the hypervisor-provided Virtual Machine Generation ID
+	  to reseed the RNG when the VM is cloned. This is highly recommended if
+	  you intend to do any rollback / cloning / snapshotting of VMs.
+
+	  Prefer Y to M so that this protection is activated very early.
+
 config FSL_HV_MANAGER
 	tristate "Freescale hypervisor management driver"
 	depends on FSL_SOC
@@ -31,9 +42,25 @@ config FSL_HV_MANAGER
           4) A kernel interface for receiving callbacks when a managed
 	     partition shuts down.
 
+config JAILHOUSE_DBGCON
+	tristate "Jailhouse console driver"
+	depends on X86 || ARM || ARM64
+	help
+	  The Jailhouse hypervisor provides a simple write-only console for
+	  debugging the bootstrap process of its cells. This driver registers
+	  a console with the kernel to make use of it.
+
+	  Note that Jailhouse has to be configured to permit a cell the usage
+	  of the console interface.
+
 source "drivers/virt/vboxguest/Kconfig"
 
 source "drivers/virt/nitro_enclaves/Kconfig"
 
 source "drivers/virt/acrn/Kconfig"
+
+source "drivers/virt/coco/efi_secret/Kconfig"
+
+source "drivers/virt/coco/sev-guest/Kconfig"
+
 endif

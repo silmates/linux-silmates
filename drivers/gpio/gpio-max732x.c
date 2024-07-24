@@ -19,6 +19,7 @@
 #include <linux/i2c.h>
 #include <linux/platform_data/max732x.h>
 #include <linux/of.h>
+#include <linux/reset.h>
 
 
 /*
@@ -75,6 +76,12 @@
 #define INT_MERGED_MASK 0x3	/* Has interrupts, merged mask */
 
 #define INT_CAPS(x)	(((uint64_t)(x)) << 32)
+
+enum {
+	OUTPUT_MASK,
+	OUTPUT_VAL,
+	OUTPUT_NUM,
+};
 
 enum {
 	MAX7319,
@@ -496,17 +503,13 @@ static int max732x_irq_setup(struct max732x_chip *chip,
 			     const struct i2c_device_id *id)
 {
 	struct i2c_client *client = chip->client;
-	struct max732x_platform_data *pdata = dev_get_platdata(&client->dev);
 	int has_irq = max732x_features[id->driver_data] >> 32;
 	int irq_base = 0;
 	int ret;
 
-	if (((pdata && pdata->irq_base) || client->irq)
-			&& has_irq != INT_NONE) {
+	if (client->irq && has_irq != INT_NONE) {
 		struct gpio_irq_chip *girq;
 
-		if (pdata)
-			irq_base = pdata->irq_base;
 		chip->irq_features = has_irq;
 		mutex_init(&chip->irq_lock);
 
@@ -540,10 +543,9 @@ static int max732x_irq_setup(struct max732x_chip *chip,
 			     const struct i2c_device_id *id)
 {
 	struct i2c_client *client = chip->client;
-	struct max732x_platform_data *pdata = dev_get_platdata(&client->dev);
 	int has_irq = max732x_features[id->driver_data] >> 32;
 
-	if (((pdata && pdata->irq_base) || client->irq) && has_irq != INT_NONE)
+	if (client->irq && has_irq != INT_NONE)
 		dev_warn(&client->dev, "interrupt support not compiled in\n");
 
 	return 0;
@@ -622,6 +624,8 @@ static int max732x_probe(struct i2c_client *client,
 	struct i2c_client *c;
 	uint16_t addr_a, addr_b;
 	int ret, nr_port;
+	u16 out_set[OUTPUT_NUM];
+	unsigned long mask, val;
 
 	pdata = dev_get_platdata(&client->dev);
 	node = client->dev.of_node;
@@ -638,6 +642,10 @@ static int max732x_probe(struct i2c_client *client,
 	if (chip == NULL)
 		return -ENOMEM;
 	chip->client = client;
+
+	ret = device_reset(&client->dev);
+	if (ret == -EPROBE_DEFER)
+		return ret;
 
 	nr_port = max732x_setup_gpio(chip, id, pdata->gpio_base);
 	chip->gpio_chip.parent = &client->dev;
@@ -703,32 +711,14 @@ static int max732x_probe(struct i2c_client *client,
 	if (ret)
 		return ret;
 
-	if (pdata->setup) {
-		ret = pdata->setup(client, chip->gpio_chip.base,
-				chip->gpio_chip.ngpio, pdata->context);
-		if (ret < 0)
-			dev_warn(&client->dev, "setup failed, %d\n", ret);
-	}
-
 	i2c_set_clientdata(client, chip);
-	return 0;
-}
 
-static int max732x_remove(struct i2c_client *client)
-{
-	struct max732x_platform_data *pdata = dev_get_platdata(&client->dev);
-	struct max732x_chip *chip = i2c_get_clientdata(client);
-
-	if (pdata && pdata->teardown) {
-		int ret;
-
-		ret = pdata->teardown(client, chip->gpio_chip.base,
-				chip->gpio_chip.ngpio, pdata->context);
-		if (ret < 0) {
-			dev_err(&client->dev, "%s failed, %d\n",
-					"teardown", ret);
-			return ret;
-		}
+	/* set the output IO default voltage */
+	if (!of_property_read_u16_array(node, "out-default", out_set,
+					ARRAY_SIZE(out_set))) {
+		mask = out_set[OUTPUT_MASK] & chip->dir_output;
+		val = out_set[OUTPUT_VAL];
+		max732x_gpio_set_multiple(&chip->gpio_chip, &mask, &val);
 	}
 
 	return 0;
@@ -740,7 +730,6 @@ static struct i2c_driver max732x_driver = {
 		.of_match_table	= of_match_ptr(max732x_of_table),
 	},
 	.probe		= max732x_probe,
-	.remove		= max732x_remove,
 	.id_table	= max732x_id,
 };
 

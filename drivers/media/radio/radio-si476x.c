@@ -313,12 +313,6 @@ struct si476x_radio {
 };
 
 static inline struct si476x_radio *
-v4l2_dev_to_radio(struct v4l2_device *d)
-{
-	return container_of(d, struct si476x_radio, v4l2dev);
-}
-
-static inline struct si476x_radio *
 v4l2_ctrl_handler_to_radio(struct v4l2_ctrl_handler *d)
 {
 	return container_of(d, struct si476x_radio, ctrl_handler);
@@ -989,6 +983,14 @@ static int si476x_radio_s_ctrl(struct v4l2_ctrl *ctrl)
 		}
 		break;
 
+	case V4L2_CID_AUDIO_MUTE:
+		if (ctrl->val)
+			retval = regmap_write(radio->core->regmap,
+					      SI476X_PROP_AUDIO_MUTE, 3);
+		else
+			retval = regmap_write(radio->core->regmap,
+					      SI476X_PROP_AUDIO_MUTE, 0);
+		break;
 	default:
 		retval = -EINVAL;
 		break;
@@ -1078,7 +1080,6 @@ done:
 
 static int si476x_radio_fops_release(struct file *file)
 {
-	int err;
 	struct si476x_radio *radio = video_drvdata(file);
 
 	if (v4l2_fh_is_singular_file(file) &&
@@ -1086,9 +1087,7 @@ static int si476x_radio_fops_release(struct file *file)
 		si476x_core_set_power_state(radio->core,
 					    SI476X_POWER_DOWN);
 
-	err = v4l2_fh_release(file);
-
-	return err;
+	return v4l2_fh_release(file);
 }
 
 static ssize_t si476x_radio_fops_read(struct file *file, char __user *buf,
@@ -1476,6 +1475,16 @@ static int si476x_radio_probe(struct platform_device *pdev)
 	rval = radio->ctrl_handler.error;
 	if (ctrl == NULL && rval) {
 		dev_err(&pdev->dev, "Could not initialize V4L2_CID_RDS_RECEPTION control %d\n",
+			rval);
+		goto exit;
+	}
+
+	ctrl = v4l2_ctrl_new_std(&radio->ctrl_handler, &si476x_ctrl_ops,
+				 V4L2_CID_AUDIO_MUTE,
+				 0, 1, 1, 0);
+	rval = radio->ctrl_handler.error;
+	if (ctrl == NULL && rval) {
+		dev_err(&pdev->dev, "Could not initialize V4L2_CID_AUDIO_MUTE control %d\n",
 			rval);
 		goto exit;
 	}

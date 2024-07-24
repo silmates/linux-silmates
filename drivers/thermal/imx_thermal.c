@@ -6,6 +6,7 @@
 #include <linux/cpufreq.h>
 #include <linux/cpu_cooling.h>
 #include <linux/delay.h>
+#include <linux/device_cooling.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/mfd/syscon.h>
@@ -15,6 +16,7 @@
 #include <linux/regmap.h>
 #include <linux/thermal.h>
 #include <linux/nvmem-consumer.h>
+#include <linux/pm_runtime.h>
 
 #define REG_SET		0x4
 #define REG_CLR		0x8
@@ -84,6 +86,8 @@ enum imx_thermal_trip {
 #define TEMPMON_IMX6Q			1
 #define TEMPMON_IMX6SX			2
 #define TEMPMON_IMX7D			3
+
+#define IMX_TEMP_PASSIVE_COOL_DELTA	10000
 
 struct thermal_soc_data {
 	u32 version;
@@ -194,9 +198,10 @@ static struct thermal_soc_data thermal_imx7d_data = {
 };
 
 struct imx_thermal_data {
+	struct device *dev;
 	struct cpufreq_policy *policy;
 	struct thermal_zone_device *tz;
-	struct thermal_cooling_device *cdev;
+	struct thermal_cooling_device *cdev[2];
 	struct regmap *tempmon;
 	u32 c1, c2; /* See formula in imx_init_calib() */
 	int temp_passive;
@@ -252,43 +257,14 @@ static int imx_get_temp(struct thermal_zone_device *tz, int *temp)
 	const struct thermal_soc_data *soc_data = data->socdata;
 	struct regmap *map = data->tempmon;
 	unsigned int n_meas;
-	bool wait, run_measurement;
 	u32 val;
+	int ret;
 
-	run_measurement = !data->irq_enabled;
-	if (!run_measurement) {
-		/* Check if a measurement is currently in progress */
-		regmap_read(map, soc_data->temp_data, &val);
-		wait = !(val & soc_data->temp_valid_mask);
-	} else {
-		/*
-		 * Every time we measure the temperature, we will power on the
-		 * temperature sensor, enable measurements, take a reading,
-		 * disable measurements, power off the temperature sensor.
-		 */
-		regmap_write(map, soc_data->sensor_ctrl + REG_CLR,
-			    soc_data->power_down_mask);
-		regmap_write(map, soc_data->sensor_ctrl + REG_SET,
-			    soc_data->measure_temp_mask);
-
-		wait = true;
-	}
-
-	/*
-	 * According to the temp sensor designers, it may require up to ~17us
-	 * to complete a measurement.
-	 */
-	if (wait)
-		usleep_range(20, 50);
+	ret = pm_runtime_resume_and_get(data->dev);
+	if (ret < 0)
+		return ret;
 
 	regmap_read(map, soc_data->temp_data, &val);
-
-	if (run_measurement) {
-		regmap_write(map, soc_data->sensor_ctrl + REG_CLR,
-			     soc_data->measure_temp_mask);
-		regmap_write(map, soc_data->sensor_ctrl + REG_SET,
-			     soc_data->power_down_mask);
-	}
 
 	if ((val & soc_data->temp_valid_mask) == 0) {
 		dev_dbg(&tz->device, "temp measurement never finished\n");
@@ -328,6 +304,8 @@ static int imx_get_temp(struct thermal_zone_device *tz, int *temp)
 		enable_irq(data->irq);
 	}
 
+	pm_runtime_put(data->dev);
+
 	return 0;
 }
 
@@ -335,24 +313,16 @@ static int imx_change_mode(struct thermal_zone_device *tz,
 			   enum thermal_device_mode mode)
 {
 	struct imx_thermal_data *data = tz->devdata;
-	struct regmap *map = data->tempmon;
-	const struct thermal_soc_data *soc_data = data->socdata;
 
 	if (mode == THERMAL_DEVICE_ENABLED) {
-		regmap_write(map, soc_data->sensor_ctrl + REG_CLR,
-			     soc_data->power_down_mask);
-		regmap_write(map, soc_data->sensor_ctrl + REG_SET,
-			     soc_data->measure_temp_mask);
+		pm_runtime_get(data->dev);
 
 		if (!data->irq_enabled) {
 			data->irq_enabled = true;
 			enable_irq(data->irq);
 		}
 	} else {
-		regmap_write(map, soc_data->sensor_ctrl + REG_CLR,
-			     soc_data->measure_temp_mask);
-		regmap_write(map, soc_data->sensor_ctrl + REG_SET,
-			     soc_data->power_down_mask);
+		pm_runtime_put(data->dev);
 
 		if (data->irq_enabled) {
 			disable_irq(data->irq);
@@ -393,18 +363,48 @@ static int imx_set_trip_temp(struct thermal_zone_device *tz, int trip,
 			     int temp)
 {
 	struct imx_thermal_data *data = tz->devdata;
+	int ret;
 
-	/* do not allow changing critical threshold */
-	if (trip == IMX_TRIP_CRITICAL)
-		return -EPERM;
+	ret = pm_runtime_resume_and_get(data->dev);
+	if (ret < 0)
+		return ret;
 
 	/* do not allow passive to be set higher than critical */
 	if (temp < 0 || temp > data->temp_critical)
 		return -EINVAL;
 
-	data->temp_passive = temp;
+	if (trip == IMX_TRIP_CRITICAL) {
+		data->temp_critical = temp;
+		if (data->socdata->version == TEMPMON_IMX6SX)
+			imx_set_panic_temp(data, temp);
+	}
 
-	imx_set_alarm_temp(data, temp);
+	if (trip == IMX_TRIP_PASSIVE) {
+		if (temp > (data->temp_max - (1000 * 10)))
+			return -EINVAL;
+		data->temp_passive = temp;
+		imx_set_alarm_temp(data, temp);
+	}
+
+	pm_runtime_put(data->dev);
+
+	return 0;
+}
+
+static int imx_get_trend(struct thermal_zone_device *tz,
+			 int trip, enum thermal_trend *trend)
+{
+	int ret;
+	int trip_temp;
+
+	ret = imx_get_trip_temp(tz, trip, &trip_temp);
+	if (ret < 0)
+		return ret;
+
+	if (tz->temperature >= (trip_temp - IMX_TEMP_PASSIVE_COOL_DELTA))
+		*trend = THERMAL_TREND_RAISING;
+	else
+		*trend = THERMAL_TREND_DROPPING;
 
 	return 0;
 }
@@ -453,6 +453,7 @@ static struct thermal_zone_device_ops imx_tz_ops = {
 	.get_trip_temp = imx_get_trip_temp,
 	.get_crit_temp = imx_get_crit_temp,
 	.set_trip_temp = imx_set_trip_temp,
+	.get_trend = imx_get_trend,
 };
 
 static int imx_init_calib(struct platform_device *pdev, u32 ocotp_ana1)
@@ -640,22 +641,36 @@ static int imx_thermal_register_legacy_cooling(struct imx_thermal_data *data)
 	np = of_get_cpu_node(data->policy->cpu, NULL);
 
 	if (!np || !of_find_property(np, "#cooling-cells", NULL)) {
-		data->cdev = cpufreq_cooling_register(data->policy);
-		if (IS_ERR(data->cdev)) {
-			ret = PTR_ERR(data->cdev);
+		data->cdev[0] = cpufreq_cooling_register(data->policy);
+		if (IS_ERR(data->cdev[0])) {
+			ret = PTR_ERR(data->cdev[0]);
 			cpufreq_cpu_put(data->policy);
 		}
 	}
 
 	of_node_put(np);
+	if (ret)
+		return ret;
 
-	return ret;
+	data->cdev[1] = devfreq_cooling_register();
+	if (IS_ERR(data->cdev[1])) {
+		ret = PTR_ERR(data->cdev[1]);
+		if (ret != -EPROBE_DEFER) {
+			pr_err("failed to register cpufreq cooling device: %d\n",
+				ret);
+			cpufreq_cooling_unregister(data->cdev[0]);
+		}
+		return ret;
+	}
+
+	return 0;
 }
 
 static void imx_thermal_unregister_legacy_cooling(struct imx_thermal_data *data)
 {
-	cpufreq_cooling_unregister(data->cdev);
+	cpufreq_cooling_unregister(data->cdev[0]);
 	cpufreq_cpu_put(data->policy);
+	devfreq_cooling_unregister(data->cdev[1]);
 }
 
 #else
@@ -680,6 +695,8 @@ static int imx_thermal_probe(struct platform_device *pdev)
 	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
+
+	data->dev = &pdev->dev;
 
 	map = syscon_regmap_lookup_by_phandle(pdev->dev.of_node, "fsl,tempmon");
 	if (IS_ERR(map)) {
@@ -769,7 +786,8 @@ static int imx_thermal_probe(struct platform_device *pdev)
 
 	data->tz = thermal_zone_device_register("imx_thermal_zone",
 						IMX_TRIP_NUM,
-						BIT(IMX_TRIP_PASSIVE), data,
+						BIT(IMX_TRIP_PASSIVE) | BIT(IMX_TRIP_CRITICAL),
+						data,
 						&imx_tz_ops, NULL,
 						IMX_PASSIVE_DELAY,
 						IMX_POLLING_DELAY);
@@ -800,6 +818,16 @@ static int imx_thermal_probe(struct platform_device *pdev)
 		     data->socdata->power_down_mask);
 	regmap_write(map, data->socdata->sensor_ctrl + REG_SET,
 		     data->socdata->measure_temp_mask);
+	/* After power up, we need a delay before first access can be done. */
+	usleep_range(20, 50);
+
+	/* the core was configured and enabled just before */
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(data->dev);
+
+	ret = pm_runtime_resume_and_get(data->dev);
+	if (ret < 0)
+		goto disable_runtime_pm;
 
 	data->irq_enabled = true;
 	ret = thermal_zone_device_enable(data->tz);
@@ -814,10 +842,15 @@ static int imx_thermal_probe(struct platform_device *pdev)
 		goto thermal_zone_unregister;
 	}
 
+	pm_runtime_put(data->dev);
+
 	return 0;
 
 thermal_zone_unregister:
 	thermal_zone_device_unregister(data->tz);
+disable_runtime_pm:
+	pm_runtime_put_noidle(data->dev);
+	pm_runtime_disable(data->dev);
 clk_disable:
 	clk_disable_unprepare(data->thermal_clk);
 legacy_cleanup:
@@ -829,13 +862,9 @@ legacy_cleanup:
 static int imx_thermal_remove(struct platform_device *pdev)
 {
 	struct imx_thermal_data *data = platform_get_drvdata(pdev);
-	struct regmap *map = data->tempmon;
 
-	/* Disable measurements */
-	regmap_write(map, data->socdata->sensor_ctrl + REG_SET,
-		     data->socdata->power_down_mask);
-	if (!IS_ERR(data->thermal_clk))
-		clk_disable_unprepare(data->thermal_clk);
+	pm_runtime_put_noidle(data->dev);
+	pm_runtime_disable(data->dev);
 
 	thermal_zone_device_unregister(data->tz);
 	imx_thermal_unregister_legacy_cooling(data);
@@ -858,9 +887,8 @@ static int __maybe_unused imx_thermal_suspend(struct device *dev)
 	ret = thermal_zone_device_disable(data->tz);
 	if (ret)
 		return ret;
-	clk_disable_unprepare(data->thermal_clk);
 
-	return 0;
+	return pm_runtime_force_suspend(data->dev);
 }
 
 static int __maybe_unused imx_thermal_resume(struct device *dev)
@@ -868,19 +896,70 @@ static int __maybe_unused imx_thermal_resume(struct device *dev)
 	struct imx_thermal_data *data = dev_get_drvdata(dev);
 	int ret;
 
-	ret = clk_prepare_enable(data->thermal_clk);
+	ret = pm_runtime_force_resume(data->dev);
 	if (ret)
 		return ret;
 	/* Enabled thermal sensor after resume */
-	ret = thermal_zone_device_enable(data->tz);
+	return thermal_zone_device_enable(data->tz);
+}
+
+static int __maybe_unused imx_thermal_runtime_suspend(struct device *dev)
+{
+	struct imx_thermal_data *data = dev_get_drvdata(dev);
+	const struct thermal_soc_data *socdata = data->socdata;
+	struct regmap *map = data->tempmon;
+	int ret;
+
+	ret = regmap_write(map, socdata->sensor_ctrl + REG_CLR,
+			   socdata->measure_temp_mask);
 	if (ret)
 		return ret;
+
+	ret = regmap_write(map, socdata->sensor_ctrl + REG_SET,
+			   socdata->power_down_mask);
+	if (ret)
+		return ret;
+
+	clk_disable_unprepare(data->thermal_clk);
 
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(imx_thermal_pm_ops,
-			 imx_thermal_suspend, imx_thermal_resume);
+static int __maybe_unused imx_thermal_runtime_resume(struct device *dev)
+{
+	struct imx_thermal_data *data = dev_get_drvdata(dev);
+	const struct thermal_soc_data *socdata = data->socdata;
+	struct regmap *map = data->tempmon;
+	int ret;
+
+	ret = clk_prepare_enable(data->thermal_clk);
+	if (ret)
+		return ret;
+
+	ret = regmap_write(map, socdata->sensor_ctrl + REG_CLR,
+			   socdata->power_down_mask);
+	if (ret)
+		return ret;
+
+	ret = regmap_write(map, socdata->sensor_ctrl + REG_SET,
+			   socdata->measure_temp_mask);
+	if (ret)
+		return ret;
+
+	/*
+	 * According to the temp sensor designers, it may require up to ~17us
+	 * to complete a measurement.
+	 */
+	usleep_range(20, 50);
+
+	return 0;
+}
+
+static const struct dev_pm_ops imx_thermal_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(imx_thermal_suspend, imx_thermal_resume)
+	SET_RUNTIME_PM_OPS(imx_thermal_runtime_suspend,
+			   imx_thermal_runtime_resume, NULL)
+};
 
 static struct platform_driver imx_thermal = {
 	.driver = {

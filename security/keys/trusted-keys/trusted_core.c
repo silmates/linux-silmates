@@ -9,29 +9,42 @@
 #include <keys/user-type.h>
 #include <keys/trusted-type.h>
 #include <keys/trusted_tee.h>
+#include <keys/trusted_caam.h>
 #include <keys/trusted_tpm.h>
+#include <keys/trusted_dcp.h>
 #include <linux/capability.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/key-type.h>
 #include <linux/module.h>
 #include <linux/parser.h>
+#include <linux/random.h>
 #include <linux/rcupdate.h>
 #include <linux/slab.h>
 #include <linux/static_call.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
 
+static char *trusted_rng = "default";
+module_param_named(rng, trusted_rng, charp, 0);
+MODULE_PARM_DESC(rng, "Select trusted key RNG");
+
 static char *trusted_key_source;
 module_param_named(source, trusted_key_source, charp, 0);
-MODULE_PARM_DESC(source, "Select trusted keys source (tpm or tee)");
+MODULE_PARM_DESC(source, "Select trusted keys source (tpm, tee, caam or dcp)");
 
 static const struct trusted_key_source trusted_key_sources[] = {
-#if defined(CONFIG_TCG_TPM)
+#if defined(CONFIG_TRUSTED_KEYS_TPM)
 	{ "tpm", &trusted_key_tpm_ops },
 #endif
-#if defined(CONFIG_TEE)
+#if defined(CONFIG_TRUSTED_KEYS_TEE)
 	{ "tee", &trusted_key_tee_ops },
+#endif
+#if defined(CONFIG_TRUSTED_KEYS_CAAM)
+	{ "caam", &trusted_key_caam_ops },
+#endif
+#if defined(CONFIG_TRUSTED_KEYS_DCP)
+	{ "dcp", &trusted_key_dcp_ops },
 #endif
 };
 
@@ -70,6 +83,8 @@ static int datablob_parse(char **datablob, struct trusted_key_payload *p)
 	int key_cmd;
 	char *c;
 
+	p->is_hw_bound = !HW_BOUND_KEY;
+
 	/* main command */
 	c = strsep(datablob, " \t");
 	if (!c)
@@ -85,6 +100,13 @@ static int datablob_parse(char **datablob, struct trusted_key_payload *p)
 		if (ret < 0 || keylen < MIN_KEY_SIZE || keylen > MAX_KEY_SIZE)
 			return -EINVAL;
 		p->key_len = keylen;
+		do {
+			/* Second argument onwards,
+			 * determine if tied to HW */
+			c = strsep(datablob, " \t");
+			if ((c != NULL) && (strcmp(c, "hw") == 0))
+				p->is_hw_bound = HW_BOUND_KEY;
+		} while (c != NULL);
 		ret = Opt_new;
 		break;
 	case Opt_load:
@@ -98,6 +120,13 @@ static int datablob_parse(char **datablob, struct trusted_key_payload *p)
 		ret = hex2bin(p->blob, c, p->blob_len);
 		if (ret < 0)
 			return -EINVAL;
+		do {
+			/* Second argument onwards,
+			 * determine if tied to HW */
+			c = strsep(datablob, " \t");
+			if ((c != NULL) && (strcmp(c, "hw") == 0))
+				p->is_hw_bound = HW_BOUND_KEY;
+		} while (c != NULL);
 		ret = Opt_load;
 		break;
 	case Opt_update:
@@ -312,8 +341,14 @@ struct key_type key_type_trusted = {
 };
 EXPORT_SYMBOL_GPL(key_type_trusted);
 
+static int kernel_get_random(unsigned char *key, size_t key_len)
+{
+	return get_random_bytes_wait(key, key_len) ?: key_len;
+}
+
 static int __init init_trusted(void)
 {
+	int (*get_random)(unsigned char *key, size_t key_len);
 	int i, ret = 0;
 
 	for (i = 0; i < ARRAY_SIZE(trusted_key_sources); i++) {
@@ -322,6 +357,28 @@ static int __init init_trusted(void)
 			    strlen(trusted_key_sources[i].name)))
 			continue;
 
+		/*
+		 * We always support trusted.rng="kernel" and "default" as
+		 * well as trusted.rng=$trusted.source if the trust source
+		 * defines its own get_random callback.
+		 */
+		get_random = trusted_key_sources[i].ops->get_random;
+		if (trusted_rng && strcmp(trusted_rng, "default")) {
+			if (!strcmp(trusted_rng, "kernel")) {
+				get_random = kernel_get_random;
+			} else if (strcmp(trusted_rng, trusted_key_sources[i].name) ||
+				   !get_random) {
+				pr_warn("Unsupported RNG. Supported: kernel");
+				if (get_random)
+					pr_cont(", %s", trusted_key_sources[i].name);
+				pr_cont(", default\n");
+				return -EINVAL;
+			}
+		}
+
+		if (!get_random)
+			get_random = kernel_get_random;
+
 		static_call_update(trusted_key_init,
 				   trusted_key_sources[i].ops->init);
 		static_call_update(trusted_key_seal,
@@ -329,7 +386,7 @@ static int __init init_trusted(void)
 		static_call_update(trusted_key_unseal,
 				   trusted_key_sources[i].ops->unseal);
 		static_call_update(trusted_key_get_random,
-				   trusted_key_sources[i].ops->get_random);
+				   get_random);
 		static_call_update(trusted_key_exit,
 				   trusted_key_sources[i].ops->exit);
 		migratable = trusted_key_sources[i].ops->migratable;
@@ -351,7 +408,7 @@ static int __init init_trusted(void)
 
 static void __exit cleanup_trusted(void)
 {
-	static_call(trusted_key_exit)();
+	static_call_cond(trusted_key_exit)();
 }
 
 late_initcall(init_trusted);

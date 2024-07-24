@@ -19,6 +19,7 @@
 #include <linux/refcount.h>
 #include <linux/slab.h>
 #include <linux/completion.h>
+#include <linux/hw_bound_key.h>
 
 /*
  * Autoloaded crypto modules should only use a prefixed name to avoid allowing
@@ -131,6 +132,15 @@
  *	  ->finup() natively.
  */
 #define CRYPTO_ALG_ALLOCATES_MEMORY	0x00010000
+
+/*
+ * Mark an algorithm as a service implementation only usable by a
+ * template and never by a normal user of the kernel crypto API.
+ * This is intended to be used by algorithms that are themselves
+ * not FIPS-approved but may instead be used to implement parts of
+ * a FIPS-approved algorithm (e.g., dh vs. ffdhe2048(dh)).
+ */
+#define CRYPTO_ALG_FIPS_INTERNAL	0x00020000
 
 /*
  * Transform masks and values (for crt_flags).
@@ -629,6 +639,10 @@ int crypto_has_alg(const char *name, u32 type, u32 mask);
 struct crypto_tfm {
 
 	u32 crt_flags;
+
+	unsigned int is_hbk;
+
+	struct hw_bound_key_info hbk_info;
 
 	int node;
 	

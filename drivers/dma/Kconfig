@@ -85,6 +85,14 @@ config AMCC_PPC440SPE_ADMA
 	help
 	  Enable support for the AMCC PPC440SPe RAID engines.
 
+config APPLE_ADMAC
+	tristate "Apple ADMAC support"
+	depends on ARCH_APPLE || COMPILE_TEST
+	select DMA_ENGINE
+	default ARCH_APPLE
+	help
+	  Enable support for Audio DMA Controller found on Apple Silicon SoCs.
+
 config AT_HDMAC
 	tristate "Atmel AHB DMA support"
 	depends on ARCH_AT91
@@ -125,6 +133,24 @@ config BCM_SBA_RAID
 	  has the capability to offload memcpy, xor and pq computation
 	  for raid5/6.
 
+config CRYPTO_DEV_FSL_CAAM_DMA
+	tristate "CAAM DMA engine support"
+	depends on CRYPTO_DEV_FSL_CAAM_JR
+	default n
+	select DMA_ENGINE
+	select ASYNC_CORE
+	select ASYNC_TX_ENABLE_CHANNEL_SWITCH
+	help
+	  Selecting this will offload the DMA operations for users of
+	  the scatter gather memcopy API to the CAAM via job rings. The
+	  CAAM is a hardware module that provides hardware acceleration to
+	  cryptographic operations. It has a built-in DMA controller that can
+	  be programmed to read/write cryptographic data. This module defines
+	  a DMA driver that uses the DMA capabilities of the CAAM.
+
+	  To compile this as a module, choose M here: the module
+	  will be called caam_dma.
+
 config DMA_BCM2835
 	tristate "BCM2835 DMA engine support"
 	depends on ARCH_BCM2835
@@ -163,7 +189,7 @@ config DMA_SUN4I
 
 config DMA_SUN6I
 	tristate "Allwinner A31 SoCs DMA support"
-	depends on MACH_SUN6I || MACH_SUN8I || (ARM64 && ARCH_SUNXI) || COMPILE_TEST
+	depends on ARCH_SUNXI || COMPILE_TEST
 	depends on RESET_CONTROLLER
 	select DMA_ENGINE
 	select DMA_VIRTUAL_CHANNELS
@@ -172,7 +198,7 @@ config DMA_SUN6I
 
 config DW_AXI_DMAC
 	tristate "Synopsys DesignWare AXI DMA support"
-	depends on OF || COMPILE_TEST
+	depends on OF
 	depends on HAS_IOMEM
 	select DMA_ENGINE
 	select DMA_VIRTUAL_CHANNELS
@@ -222,6 +248,17 @@ config FSL_QDMA
 	 or dequeuing DMA jobs from, different work queues.
 	 This module can be found on NXP Layerscape SoCs.
 	  The qdma driver only work on  SoCs with a DPAA hardware block.
+config FSL_EDMA_V3
+	tristate "Freescale eDMA v3 engine support"
+	depends on OF
+	select DMA_ENGINE
+	select DMA_VIRTUAL_CHANNELS
+	help
+	  Support the Freescale eDMA v3 engine with programmable channel.
+	  This driver is based on FSL_EDMA but big changes come such as
+	  different interrupt for different channel, different register
+	  scope for different channel.
+	  This module can be found on Freescale i.MX8QM.
 
 config FSL_RAID
 	tristate "Freescale RAID engine Support"
@@ -463,13 +500,15 @@ config MV_XOR_V2
 	  platforms.
 
 config MXS_DMA
-	bool "MXS DMA support"
+	tristate "MXS DMA support"
 	depends on ARCH_MXS || ARCH_MXC || COMPILE_TEST
 	select STMP_DEVICE
 	select DMA_ENGINE
 	help
 	  Support the MXS DMA engine. This engine including APBH-DMA
 	  and APBX-DMA is integrated into some Freescale chips.
+
+source "drivers/dma/pxp/Kconfig"
 
 config MX3_IPU
 	bool "MX3x Image Processing Unit support"
@@ -623,11 +662,23 @@ config S3C24XX_DMAC
 
 config TXX9_DMAC
 	tristate "Toshiba TXx9 SoC DMA support"
-	depends on MACH_TX49XX || MACH_TX39XX
+	depends on MACH_TX49XX
 	select DMA_ENGINE
 	help
 	  Support the TXx9 SoC internal DMA controller.  This can be
 	  integrated in chips such as the Toshiba TX4927/38/39.
+
+config TEGRA186_GPC_DMA
+	tristate "NVIDIA Tegra GPC DMA support"
+	depends on (ARCH_TEGRA || COMPILE_TEST) && ARCH_DMA_ADDR_T_64BIT
+	depends on IOMMU_API
+	select DMA_ENGINE
+	help
+	  Support for the NVIDIA Tegra General Purpose Central DMA controller.
+	  The DMA controller has multiple DMA channels which can be configured
+	  for different peripherals like UART, SPI, etc which are on APB bus.
+	  This DMA controller transfers data from memory to peripheral FIFO
+	  or vice versa. It also supports memory to memory data transfer.
 
 config TEGRA20_APB_DMA
 	tristate "NVIDIA Tegra20 APB DMA support"
@@ -717,7 +768,7 @@ config XILINX_DMA
 
 config XILINX_ZYNQMP_DMA
 	tristate "Xilinx ZynqMP DMA Engine"
-	depends on (ARCH_ZYNQ || MICROBLAZE || ARM64)
+	depends on ARCH_ZYNQ || MICROBLAZE || ARM64 || COMPILE_TEST
 	select DMA_ENGINE
 	help
 	  Enable support for Xilinx ZynqMP DMA controller.

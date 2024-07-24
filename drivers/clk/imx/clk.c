@@ -17,6 +17,10 @@
 DEFINE_SPINLOCK(imx_ccm_lock);
 EXPORT_SYMBOL_GPL(imx_ccm_lock);
 
+bool mcore_booted;
+EXPORT_SYMBOL_GPL(mcore_booted);
+bool uart_from_osc;
+
 void imx_unregister_clocks(struct clk *clks[], unsigned int count)
 {
 	unsigned int i;
@@ -173,6 +177,8 @@ void imx_register_uart_clocks(unsigned int clk_count)
 		int i;
 
 		imx_uart_clocks = kcalloc(clk_count, sizeof(struct clk *), GFP_KERNEL);
+		if (!imx_uart_clocks)
+			return;
 
 		if (!of_stdout)
 			return;
@@ -194,6 +200,9 @@ void imx_register_uart_clocks(unsigned int clk_count)
 
 static int __init imx_clk_disable_uart(void)
 {
+	if (imx_src_is_m4_enabled())
+		return 0;
+
 	if (imx_keep_uart_clocks && imx_enabled_uart_clocks) {
 		int i;
 
@@ -207,6 +216,14 @@ static int __init imx_clk_disable_uart(void)
 	return 0;
 }
 late_initcall_sync(imx_clk_disable_uart);
+
+static int __init setup_uart_clk(char *uart_rate)
+{
+       uart_from_osc = true;
+       return 1;
+}
+__setup("uart_from_osc", setup_uart_clk);
+
 #endif
 
 MODULE_LICENSE("GPL v2");

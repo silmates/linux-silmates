@@ -31,6 +31,7 @@
 #include <linux/io.h>
 #include <linux/uaccess.h>
 #include <linux/atomic.h>
+#include <linux/suspend.h>
 #include <net/netlink.h>
 #include <net/genetlink.h>
 #include <net/sock.h>
@@ -112,6 +113,33 @@ void phy_print_status(struct phy_device *phydev)
 	}
 }
 EXPORT_SYMBOL(phy_print_status);
+
+/**
+ * phy_get_rate_matching - determine if rate matching is supported
+ * @phydev: The phy device to return rate matching for
+ * @iface: The interface mode to use
+ *
+ * This determines the type of rate matching (if any) that @phy supports
+ * using @iface. @iface may be %PHY_INTERFACE_MODE_NA to determine if any
+ * interface supports rate matching.
+ *
+ * Return: The type of rate matching @phy supports for @iface, or
+ *         %RATE_MATCH_NONE.
+ */
+int phy_get_rate_matching(struct phy_device *phydev,
+			  phy_interface_t iface)
+{
+	int ret = RATE_MATCH_NONE;
+
+	if (phydev->drv->get_rate_matching) {
+		mutex_lock(&phydev->lock);
+		ret = phydev->drv->get_rate_matching(phydev, iface);
+		mutex_unlock(&phydev->lock);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(phy_get_rate_matching);
 
 /**
  * phy_config_interrupt - configure the PHY device for the requested interrupts
@@ -255,6 +283,7 @@ void phy_ethtool_ksettings_get(struct phy_device *phydev,
 	cmd->base.duplex = phydev->duplex;
 	cmd->base.master_slave_cfg = phydev->master_slave_get;
 	cmd->base.master_slave_state = phydev->master_slave_state;
+	cmd->base.rate_matching = phydev->rate_matching;
 	if (phydev->interface == PHY_INTERFACE_MODE_MOCA)
 		cmd->base.port = PORT_BNC;
 	else
@@ -295,20 +324,20 @@ int phy_mii_ioctl(struct phy_device *phydev, struct ifreq *ifr, int cmd)
 		if (mdio_phy_id_is_c45(mii_data->phy_id)) {
 			prtad = mdio_phy_id_prtad(mii_data->phy_id);
 			devad = mdio_phy_id_devad(mii_data->phy_id);
-			devad = mdiobus_c45_addr(devad, mii_data->reg_num);
+			mii_data->val_out = mdiobus_c45_read(
+				phydev->mdio.bus, prtad, devad,
+				mii_data->reg_num);
 		} else {
-			prtad = mii_data->phy_id;
-			devad = mii_data->reg_num;
+			mii_data->val_out = mdiobus_read(
+				phydev->mdio.bus, mii_data->phy_id,
+				mii_data->reg_num);
 		}
-		mii_data->val_out = mdiobus_read(phydev->mdio.bus, prtad,
-						 devad);
 		return 0;
 
 	case SIOCSMIIREG:
 		if (mdio_phy_id_is_c45(mii_data->phy_id)) {
 			prtad = mdio_phy_id_prtad(mii_data->phy_id);
 			devad = mdio_phy_id_devad(mii_data->phy_id);
-			devad = mdiobus_c45_addr(devad, mii_data->reg_num);
 		} else {
 			prtad = mii_data->phy_id;
 			devad = mii_data->reg_num;
@@ -351,7 +380,11 @@ int phy_mii_ioctl(struct phy_device *phydev, struct ifreq *ifr, int cmd)
 			}
 		}
 
-		mdiobus_write(phydev->mdio.bus, prtad, devad, val);
+		if (mdio_phy_id_is_c45(mii_data->phy_id))
+			mdiobus_c45_write(phydev->mdio.bus, prtad, devad,
+					  mii_data->reg_num, val);
+		else
+			mdiobus_write(phydev->mdio.bus, prtad, devad, val);
 
 		if (prtad == phydev->mdio.addr &&
 		    devad == MII_BMCR &&
@@ -699,6 +732,32 @@ static int phy_check_link_status(struct phy_device *phydev)
 	return 0;
 }
 
+int phy_validate_inband_aneg(struct phy_device *phydev,
+			     phy_interface_t interface)
+{
+	/* We may be called before phy_attach_direct() force-binds the
+	 * generic PHY driver to this device. In that case, report an unknown
+	 * setting rather than -EIO as most other functions do.
+	 */
+	if (!phydev->drv || !phydev->drv->validate_inband_aneg)
+		return PHY_INBAND_ANEG_UNKNOWN;
+
+	return phydev->drv->validate_inband_aneg(phydev, interface);
+}
+EXPORT_SYMBOL_GPL(phy_validate_inband_aneg);
+
+int phy_config_inband_aneg(struct phy_device *phydev, bool enabled)
+{
+	if (!phydev->drv)
+		return -EIO;
+
+	if (!phydev->drv->config_inband_aneg)
+		return -EOPNOTSUPP;
+
+	return phydev->drv->config_inband_aneg(phydev, enabled);
+}
+EXPORT_SYMBOL_GPL(phy_config_inband_aneg);
+
 /**
  * _phy_start_aneg - start auto-negotiation for this PHY device
  * @phydev: the phy_device struct
@@ -815,7 +874,12 @@ int phy_ethtool_ksettings_set(struct phy_device *phydev,
 	phydev->mdix_ctrl = cmd->base.eth_tp_mdix_ctrl;
 
 	/* Restart the PHY */
-	_phy_start_aneg(phydev);
+	if (phy_is_started(phydev)) {
+		phydev->state = PHY_UP;
+		phy_trigger_machine(phydev);
+	} else {
+		_phy_start_aneg(phydev);
+	}
 
 	mutex_unlock(&phydev->lock);
 	return 0;
@@ -965,8 +1029,35 @@ static irqreturn_t phy_interrupt(int irq, void *phy_dat)
 {
 	struct phy_device *phydev = phy_dat;
 	struct phy_driver *drv = phydev->drv;
+	irqreturn_t ret;
 
-	return drv->handle_interrupt(phydev);
+	/* Wakeup interrupts may occur during a system sleep transition.
+	 * Postpone handling until the PHY has resumed.
+	 */
+	if (IS_ENABLED(CONFIG_PM_SLEEP) && phydev->irq_suspended) {
+		struct net_device *netdev = phydev->attached_dev;
+
+		if (netdev) {
+			struct device *parent = netdev->dev.parent;
+
+			if (netdev->wol_enabled)
+				pm_system_wakeup();
+			else if (device_may_wakeup(&netdev->dev))
+				pm_wakeup_dev_event(&netdev->dev, 0, true);
+			else if (parent && device_may_wakeup(parent))
+				pm_wakeup_dev_event(parent, 0, true);
+		}
+
+		phydev->irq_rerun = 1;
+		disable_irq_nosync(irq);
+		return IRQ_HANDLED;
+	}
+
+	mutex_lock(&phydev->lock);
+	ret = drv->handle_interrupt(phydev);
+	mutex_unlock(&phydev->lock);
+
+	return ret;
 }
 
 /**

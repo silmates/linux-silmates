@@ -8,6 +8,8 @@
 #include <sound/hdmi-codec.h>
 #include "fsl_sai.h"
 
+#define SUPPORT_RATE_NUM 10
+
 /**
  * struct cpu_priv - CPU private data
  * @sysclk_id: SYSCLK ids for set_sysclk()
@@ -28,6 +30,55 @@ struct imx_hdmi_data {
 	struct cpu_priv cpu_priv;
 	u32 dai_fmt;
 };
+
+static int imx_hdmi_startup(struct snd_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	int ret;
+
+	/* Remove S20_3LE for clock issue */
+	ret = snd_pcm_hw_constraint_mask64(runtime,
+					   SNDRV_PCM_HW_PARAM_FORMAT,
+					   ~SNDRV_PCM_FMTBIT_S20_3LE);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+static int imx_sii902x_startup(struct snd_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	static struct snd_pcm_hw_constraint_list constraint_rates;
+	static u32 support_rates[SUPPORT_RATE_NUM];
+	int ret;
+
+	support_rates[0] = 32000;
+	support_rates[1] = 48000;
+	support_rates[2] = 96000;
+	support_rates[3] = 192000;
+	constraint_rates.list = support_rates;
+	constraint_rates.count = 4;
+
+	ret = snd_pcm_hw_constraint_list(runtime, 0, SNDRV_PCM_HW_PARAM_RATE,
+					 &constraint_rates);
+	if (ret)
+		return ret;
+
+	ret = snd_pcm_hw_constraint_minmax(runtime, SNDRV_PCM_HW_PARAM_CHANNELS,
+					   1, 2);
+	if (ret < 0)
+		return ret;
+
+	/* Remove S20_3LE for clock issue */
+	ret = snd_pcm_hw_constraint_mask64(runtime,
+					   SNDRV_PCM_HW_PARAM_FORMAT,
+					   ~SNDRV_PCM_FMTBIT_S20_3LE);
+	if (ret)
+		return ret;
+
+	return 0;
+}
 
 static int imx_hdmi_hw_params(struct snd_pcm_substream *substream,
 			      struct snd_pcm_hw_params *params)
@@ -59,7 +110,13 @@ static int imx_hdmi_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static struct snd_soc_ops imx_hdmi_ops = {
+static const struct snd_soc_ops imx_hdmi_ops = {
+	.startup = imx_hdmi_startup,
+	.hw_params = imx_hdmi_hw_params,
+};
+
+static struct snd_soc_ops imx_sii902x_ops = {
+	.startup = imx_sii902x_startup,
 	.hw_params = imx_hdmi_hw_params,
 };
 
@@ -78,8 +135,9 @@ static int imx_hdmi_init(struct snd_soc_pcm_runtime *rtd)
 	data->hdmi_jack_pin.pin = "HDMI Jack";
 	data->hdmi_jack_pin.mask = SND_JACK_LINEOUT;
 	/* enable jack detection */
-	ret = snd_soc_card_jack_new(card, "HDMI Jack", SND_JACK_LINEOUT,
-				    &data->hdmi_jack, &data->hdmi_jack_pin, 1);
+	ret = snd_soc_card_jack_new_pins(card, "HDMI Jack", SND_JACK_LINEOUT,
+					 &data->hdmi_jack,
+					 &data->hdmi_jack_pin, 1);
 	if (ret) {
 		dev_err(card->dev, "Can't new HDMI Jack %d\n", ret);
 		return ret;
@@ -126,6 +184,7 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data) {
 		ret = -ENOMEM;
+		put_device(&cpu_pdev->dev);
 		goto fail;
 	}
 
@@ -145,6 +204,8 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 	data->dai.capture_only = false;
 	data->dai.init = imx_hdmi_init;
 
+	put_device(&cpu_pdev->dev);
+
 	if (of_node_name_eq(cpu_np, "sai")) {
 		data->cpu_priv.sysclk_id[1] = FSL_SAI_CLK_MAST1;
 		data->cpu_priv.sysclk_id[0] = FSL_SAI_CLK_MAST1;
@@ -153,6 +214,7 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 	if (of_device_is_compatible(np, "fsl,imx-audio-sii902x")) {
 		data->dai_fmt = SND_SOC_DAIFMT_LEFT_J;
 		data->cpu_priv.slot_width = 24;
+		data->dai.ops = &imx_sii902x_ops;
 	} else {
 		data->dai_fmt = SND_SOC_DAIFMT_I2S;
 		data->cpu_priv.slot_width = 32;
@@ -171,7 +233,7 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 		data->dai.codecs->name = "hdmi-audio-codec.1";
 		data->dai.dai_fmt = data->dai_fmt |
 				    SND_SOC_DAIFMT_NB_NF |
-				    SND_SOC_DAIFMT_CBS_CFS;
+				    SND_SOC_DAIFMT_CBC_CFC;
 	}
 
 	if (hdmi_in) {
@@ -181,7 +243,7 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 		data->dai.codecs->name = "hdmi-audio-codec.2";
 		data->dai.dai_fmt = data->dai_fmt |
 				    SND_SOC_DAIFMT_NB_NF |
-				    SND_SOC_DAIFMT_CBM_CFM;
+				    SND_SOC_DAIFMT_CBP_CFP;
 	}
 
 	data->card.dapm_widgets = imx_hdmi_widgets;
@@ -203,8 +265,7 @@ static int imx_hdmi_probe(struct platform_device *pdev)
 	}
 
 fail:
-	if (cpu_np)
-		of_node_put(cpu_np);
+	of_node_put(cpu_np);
 
 	return ret;
 }

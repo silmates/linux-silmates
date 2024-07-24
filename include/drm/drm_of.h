@@ -7,6 +7,7 @@
 #include <drm/drm_bridge.h>
 #endif
 
+struct component_match;
 struct component_master_ops;
 struct component_match;
 struct device;
@@ -37,6 +38,10 @@ void drm_of_component_match_add(struct device *master,
 				struct component_match **matchptr,
 				int (*compare)(struct device *, void *),
 				struct device_node *node);
+extern int drm_of_component_probe_with_match(struct device *dev,
+			   struct component_match *match,
+			   int (*compare_of)(struct device *, void *),
+			   const struct component_master_ops *m_ops);
 int drm_of_component_probe(struct device *dev,
 			   int (*compare_of)(struct device *, void *),
 			   const struct component_master_ops *m_ops);
@@ -49,6 +54,13 @@ int drm_of_find_panel_or_bridge(const struct device_node *np,
 				struct drm_bridge **bridge);
 int drm_of_lvds_get_dual_link_pixel_order(const struct device_node *port1,
 					  const struct device_node *port2);
+int drm_of_lvds_get_data_mapping(const struct device_node *port);
+int drm_of_get_data_lanes_count(const struct device_node *endpoint,
+				const unsigned int min, const unsigned int max);
+int drm_of_get_data_lanes_count_ep(const struct device_node *port,
+				   int port_reg, int reg,
+				   const unsigned int min,
+				   const unsigned int max);
 #else
 static inline uint32_t drm_of_crtc_port_mask(struct drm_device *dev,
 					  struct device_node *port)
@@ -68,6 +80,14 @@ drm_of_component_match_add(struct device *master,
 			   int (*compare)(struct device *, void *),
 			   struct device_node *node)
 {
+}
+
+static int drm_of_component_probe_with_match(struct device *dev,
+			   struct component_match *match,
+			   int (*compare_of)(struct device *, void *),
+			   const struct component_master_ops *m_ops)
+{
+	return -EINVAL;
 }
 
 static inline int
@@ -95,6 +115,28 @@ static inline int drm_of_find_panel_or_bridge(const struct device_node *np,
 static inline int
 drm_of_lvds_get_dual_link_pixel_order(const struct device_node *port1,
 				      const struct device_node *port2)
+{
+	return -EINVAL;
+}
+
+static inline int
+drm_of_lvds_get_data_mapping(const struct device_node *port)
+{
+	return -EINVAL;
+}
+
+static inline int
+drm_of_get_data_lanes_count(const struct device_node *endpoint,
+			    const unsigned int min, const unsigned int max)
+{
+	return -EINVAL;
+}
+
+static inline int
+drm_of_get_data_lanes_count_ep(const struct device_node *port,
+			       int port_reg, int reg,
+			       const unsigned int min,
+			       const unsigned int max)
 {
 	return -EINVAL;
 }

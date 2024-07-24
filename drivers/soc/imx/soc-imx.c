@@ -36,7 +36,8 @@ static int __init imx_soc_device_init(void)
 	int ret;
 	int i;
 
-	if (of_machine_is_compatible("fsl,ls1021a"))
+	/* Return early if this is running on devices with different SoCs */
+	if (!__mxc_cpu_type)
 		return 0;
 
 	soc_dev_attr = kzalloc(sizeof(*soc_dev_attr), GFP_KERNEL);
@@ -95,7 +96,10 @@ static int __init imx_soc_device_init(void)
 		break;
 	case MXC_CPU_IMX6Q:
 		ocotp_compat = "fsl,imx6q-ocotp";
-		soc_id = "i.MX6Q";
+		if (imx_get_soc_revision() >= IMX_CHIP_REVISION_2_0)
+			soc_id = "i.MX6QP";
+		else
+			soc_id = "i.MX6Q";
 		break;
 	case MXC_CPU_IMX6UL:
 		ocotp_compat = "fsl,imx6ul-ocotp";

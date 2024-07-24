@@ -6,6 +6,7 @@ config NET_DSA_MSCC_FELIX
 	depends on NET_VENDOR_FREESCALE
 	depends on HAS_IOMEM
 	depends on PTP_1588_CLOCK_OPTIONAL
+	depends on NET_SCH_TAPRIO || NET_SCH_TAPRIO=n
 	select MSCC_OCELOT_SWITCH_LIB
 	select NET_DSA_TAG_OCELOT_8021Q
 	select NET_DSA_TAG_OCELOT
@@ -21,6 +22,7 @@ config NET_DSA_MSCC_SEVILLE
 	depends on NET_VENDOR_MICROSEMI
 	depends on HAS_IOMEM
 	depends on PTP_1588_CLOCK_OPTIONAL
+	select MDIO_MSCC_MIIM
 	select MSCC_OCELOT_SWITCH_LIB
 	select NET_DSA_TAG_OCELOT_8021Q
 	select NET_DSA_TAG_OCELOT
@@ -28,3 +30,11 @@ config NET_DSA_MSCC_SEVILLE
 	help
 	  This driver supports the VSC9953 (Seville) switch, which is embedded
 	  as a platform device on the NXP T1040 SoC.
+
+config MSCC_FELIX_SWITCH_TSN
+	bool "TSN support on Felix switch"
+	depends on NET_DSA_MSCC_FELIX
+	depends on TSN
+	help
+	  This driver supports TSN which is using tsntool netlink
+	  infrastructure on felix switch.
