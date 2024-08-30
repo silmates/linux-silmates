@@ -721,6 +721,7 @@ static int panel_simple_probe(struct device *dev, const struct panel_desc *desc,
 		err = panel_dpi_probe(dev, panel);
 		if (err)
 			goto free_ddc;
+		desc = panel->desc;
 	} else {
 		if (!of_get_display_timing(dev->of_node, "panel-timing", &dt))
 			panel_simple_parse_panel_timing_node(dev, panel, &dt);
@@ -861,7 +862,7 @@ static const struct drm_display_mode ampire_am_1280800n3tzqw_t00h_mode = {
 static const struct panel_desc ampire_am_1280800n3tzqw_t00h = {
 	.modes = &ampire_am_1280800n3tzqw_t00h_mode,
 	.num_modes = 1,
-	.bpc = 6,
+	.bpc = 8,
 	.size = {
 		.width = 217,
 		.height = 136,
@@ -1497,6 +1498,37 @@ static const struct panel_desc bananapi_s070wv20_ct16 = {
 		.width = 154,
 		.height = 86,
 	},
+};
+
+static const struct drm_display_mode boe_ev121wxm_n10_1850_mode = {
+	.clock = 71143,
+	.hdisplay = 1280,
+	.hsync_start = 1280 + 48,
+	.hsync_end = 1280 + 48 + 32,
+	.htotal = 1280 + 48 + 32 + 80,
+	.vdisplay = 800,
+	.vsync_start = 800 + 3,
+	.vsync_end = 800 + 3 + 6,
+	.vtotal = 800 + 3 + 6 + 14,
+};
+
+static const struct panel_desc boe_ev121wxm_n10_1850 = {
+	.modes = &boe_ev121wxm_n10_1850_mode,
+	.num_modes = 1,
+	.bpc = 8,
+	.size = {
+		.width = 261,
+		.height = 163,
+	},
+	.delay = {
+		.prepare = 8,
+		.enable = 300,
+		.unprepare = 300,
+		.disable = 60,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH,
+	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 };
 
 static const struct drm_display_mode boe_hv070wsa_mode = {
@@ -2509,7 +2541,7 @@ static const struct display_timing innolux_g070y2_l01_timing = {
 static const struct panel_desc innolux_g070y2_l01 = {
 	.timings = &innolux_g070y2_l01_timing,
 	.num_timings = 1,
-	.bpc = 6,
+	.bpc = 8,
 	.size = {
 		.width = 152,
 		.height = 91,
@@ -2521,6 +2553,7 @@ static const struct panel_desc innolux_g070y2_l01 = {
 		.unprepare = 800,
 	},
 	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH,
 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 };
 
@@ -2577,7 +2610,7 @@ static const struct panel_desc innolux_g121i1_l01 = {
 		.enable = 200,
 		.disable = 20,
 	},
-	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+	.bus_format = MEDIA_BUS_FMT_RGB666_1X7X3_SPWG,
 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 };
 
@@ -2829,6 +2862,43 @@ static const struct panel_desc kingdisplay_kd116n21_30nv_a010 = {
 	},
 	.bus_format = MEDIA_BUS_FMT_RGB666_1X18,
 	.connector_type = DRM_MODE_CONNECTOR_eDP,
+};
+
+static const struct display_timing jdi_tx26d202vm0bwa_timing = {
+	.pixelclock = { 151820000, 156720000, 159780000 },
+	.hactive = { 1920, 1920, 1920 },
+	.hfront_porch = { 76, 100, 112 },
+	.hback_porch = { 74, 100, 112 },
+	.hsync_len = { 30, 30, 30 },
+	.vactive = { 1200, 1200, 1200},
+	.vfront_porch = { 3, 5, 10 },
+	.vback_porch = { 2, 5, 10 },
+	.vsync_len = { 5, 5, 5 },
+	.flags = DISPLAY_FLAGS_DE_HIGH,
+};
+
+static const struct panel_desc jdi_tx26d202vm0bwa = {
+	.timings = &jdi_tx26d202vm0bwa_timing,
+	.num_timings = 1,
+	.bpc = 8,
+	.size = {
+		.width = 217,
+		.height = 136,
+	},
+	.delay = {
+		/*
+		 * The panel spec recommends one second delay
+		 * to the below items.  However, it's a bit too
+		 * long in pratice.  Based on tests, it turns
+		 * out 100 milliseconds is fine.
+		 */
+		.prepare = 100,
+		.enable = 100,
+		.unprepare = 100,
+		.disable = 100,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 };
 
 static const struct display_timing koe_tx14d24vm1bpa_timing = {
@@ -4544,6 +4614,9 @@ static const struct of_device_id platform_of_match[] = {
 		.compatible = "bananapi,s070wv20-ct16",
 		.data = &bananapi_s070wv20_ct16,
 	}, {
+		.compatible = "boe,ev121wxm-n10-1850",
+		.data = &boe_ev121wxm_n10_1850,
+	}, {
 		.compatible = "boe,hv070wsa-100",
 		.data = &boe_hv070wsa
 	}, {
@@ -4696,6 +4769,9 @@ static const struct of_device_id platform_of_match[] = {
 	}, {
 		.compatible = "kingdisplay,kd116n21-30nv-a010",
 		.data = &kingdisplay_kd116n21_30nv_a010,
+	}, {
+		.compatible = "jdi,tx26d202vm0bwa",
+		.data = &jdi_tx26d202vm0bwa,
 	}, {
 		.compatible = "koe,tx14d24vm1bpa",
 		.data = &koe_tx14d24vm1bpa,

@@ -108,6 +108,7 @@ static void xrs700x_read_port_counters(struct xrs700x *priv, int port)
 {
 	struct xrs700x_port *p = &priv->ports[port];
 	struct rtnl_link_stats64 stats;
+	unsigned long flags;
 	int i;
 
 	memset(&stats, 0, sizeof(stats));
@@ -137,9 +138,9 @@ static void xrs700x_read_port_counters(struct xrs700x *priv, int port)
 	 */
 	stats.rx_packets += stats.multicast;
 
-	u64_stats_update_begin(&p->syncp);
+	flags = u64_stats_update_begin_irqsave(&p->syncp);
 	p->stats64 = stats;
-	u64_stats_update_end(&p->syncp);
+	u64_stats_update_end_irqrestore(&p->syncp, flags);
 
 	mutex_unlock(&p->mib_mutex);
 }
@@ -503,7 +504,7 @@ static void xrs700x_mac_link_up(struct dsa_switch *ds, int port,
 }
 
 static int xrs700x_bridge_common(struct dsa_switch *ds, int port,
-				 struct net_device *bridge, bool join)
+				 struct dsa_bridge bridge, bool join)
 {
 	unsigned int i, cpu_mask = 0, mask = 0;
 	struct xrs700x *priv = ds->priv;
@@ -515,14 +516,14 @@ static int xrs700x_bridge_common(struct dsa_switch *ds, int port,
 
 		cpu_mask |= BIT(i);
 
-		if (dsa_to_port(ds, i)->bridge_dev == bridge)
+		if (dsa_port_offloads_bridge(dsa_to_port(ds, i), &bridge))
 			continue;
 
 		mask |= BIT(i);
 	}
 
 	for (i = 0; i < ds->num_ports; i++) {
-		if (dsa_to_port(ds, i)->bridge_dev != bridge)
+		if (!dsa_port_offloads_bridge(dsa_to_port(ds, i), &bridge))
 			continue;
 
 		/* 1 = Disable forwarding to the port */
@@ -542,13 +543,14 @@ static int xrs700x_bridge_common(struct dsa_switch *ds, int port,
 }
 
 static int xrs700x_bridge_join(struct dsa_switch *ds, int port,
-			       struct net_device *bridge)
+			       struct dsa_bridge bridge, bool *tx_fwd_offload,
+			       struct netlink_ext_ack *extack)
 {
 	return xrs700x_bridge_common(ds, port, bridge, true);
 }
 
 static void xrs700x_bridge_leave(struct dsa_switch *ds, int port,
-				 struct net_device *bridge)
+				 struct dsa_bridge bridge)
 {
 	xrs700x_bridge_common(ds, port, bridge, false);
 }

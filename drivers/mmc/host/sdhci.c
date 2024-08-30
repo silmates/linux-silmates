@@ -771,7 +771,19 @@ static void sdhci_adma_table_pre(struct sdhci_host *host,
 			len -= offset;
 		}
 
-		BUG_ON(len > 65536);
+		/*
+		 * The block layer forces a minimum segment size of PAGE_SIZE,
+		 * so 'len' can be too big here if PAGE_SIZE >= 64KiB. Write
+		 * multiple descriptors, noting that the ADMA table is sized
+		 * for 4KiB chunks anyway, so it will be big enough.
+		 */
+		while (len > host->max_adma) {
+			int n = 32 * 1024; /* 32KiB*/
+
+			__sdhci_adma_write_desc(host, &desc, addr, n, ADMA2_TRAN_VALID);
+			addr += n;
+			len -= n;
+		}
 
 		/* tran, valid */
 		if (len)
@@ -3675,7 +3687,7 @@ int sdhci_suspend_host(struct sdhci_host *host)
 		host->ier = 0;
 		sdhci_writel(host, 0, SDHCI_INT_ENABLE);
 		sdhci_writel(host, 0, SDHCI_SIGNAL_ENABLE);
-		free_irq(host->irq, host);
+		disable_irq(host->irq);
 	}
 
 	return 0;
@@ -3686,7 +3698,6 @@ EXPORT_SYMBOL_GPL(sdhci_suspend_host);
 int sdhci_resume_host(struct sdhci_host *host)
 {
 	struct mmc_host *mmc = host->mmc;
-	int ret = 0;
 
 	if (host->flags & (SDHCI_USE_SDMA | SDHCI_USE_ADMA)) {
 		if (host->ops->enable_dma)
@@ -3707,16 +3718,12 @@ int sdhci_resume_host(struct sdhci_host *host)
 	if (host->irq_wake_enabled) {
 		sdhci_disable_irq_wakeups(host);
 	} else {
-		ret = request_threaded_irq(host->irq, sdhci_irq,
-					   sdhci_thread_irq, IRQF_SHARED,
-					   mmc_hostname(mmc), host);
-		if (ret)
-			return ret;
+		enable_irq(host->irq);
 	}
 
 	sdhci_enable_card_detection(host);
 
-	return ret;
+	return 0;
 }
 
 EXPORT_SYMBOL_GPL(sdhci_resume_host);
@@ -3952,6 +3959,7 @@ struct sdhci_host *sdhci_alloc_host(struct device *dev,
 	 * descriptor for each segment, plus 1 for a nop end descriptor.
 	 */
 	host->adma_table_cnt = SDHCI_MAX_SEGS * 2 + 1;
+	host->max_adma = 65536;
 
 	host->max_timeout_count = 0xE;
 
@@ -4617,10 +4625,12 @@ int sdhci_setup_host(struct sdhci_host *host)
 	 * be larger than 64 KiB though.
 	 */
 	if (host->flags & SDHCI_USE_ADMA) {
-		if (host->quirks & SDHCI_QUIRK_BROKEN_ADMA_ZEROLEN_DESC)
+		if (host->quirks & SDHCI_QUIRK_BROKEN_ADMA_ZEROLEN_DESC) {
+			host->max_adma = 65532; /* 32-bit alignment */
 			mmc->max_seg_size = 65535;
-		else
+		} else {
 			mmc->max_seg_size = 65536;
+		}
 	} else {
 		mmc->max_seg_size = mmc->max_req_size;
 	}

@@ -128,7 +128,19 @@ struct fb_cursor_user {
 /*	The resolution of the passed in fb_info about to change */
 #define FB_EVENT_MODE_CHANGE		0x01
 
-#ifdef CONFIG_GUMSTIX_AM200EPD
+#ifdef CONFIG_FB_MXC_HDMI
+/* only used by mxc_hdmi.c */
+/*     The display on this fb_info is being suspended, no access to the
+ *     framebuffer is allowed any more after that call returns
+ */
+#define FB_EVENT_SUSPEND               0x02
+/*     The display on this fb_info was resumed, you can restore the display
+ *     if you own it
+ */
+#define FB_EVENT_RESUME                        0x03
+#endif
+
+#if (defined CONFIG_GUMSTIX_AM200EPD) || (defined CONFIG_FB_MXC_HDMI) || (defined CONFIG_FB_MXS_SII902X)
 /* only used by mach-pxa/am200epd.c */
 #define FB_EVENT_FB_REGISTERED          0x05
 #define FB_EVENT_FB_UNREGISTERED        0x06
@@ -502,6 +514,7 @@ struct fb_info {
 	} *apertures;
 
 	bool skip_vt_switch; /* no VT switch on suspend/resume required */
+	bool forced_out; /* set when being removed by another driver */
 };
 
 static inline struct apertures_struct *alloc_apertures(unsigned int max_num) {
@@ -610,6 +623,7 @@ extern int remove_conflicting_pci_framebuffers(struct pci_dev *pdev,
 					       const char *name);
 extern int remove_conflicting_framebuffers(struct apertures_struct *a,
 					   const char *name, bool primary);
+extern bool is_firmware_framebuffer(struct apertures_struct *a);
 extern int fb_prepare_logo(struct fb_info *fb_info, int rotate);
 extern int fb_show_logo(struct fb_info *fb_info, int rotate);
 extern char* fb_get_buffer_offset(struct fb_info *info, struct fb_pixmap *buf, u32 size);

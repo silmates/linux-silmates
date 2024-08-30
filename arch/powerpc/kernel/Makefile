@@ -11,6 +11,7 @@ CFLAGS_prom_init.o      += -fPIC
 CFLAGS_btext.o		+= -fPIC
 endif
 
+CFLAGS_early_32.o += $(DISABLE_LATENT_ENTROPY_PLUGIN)
 CFLAGS_cputable.o += $(DISABLE_LATENT_ENTROPY_PLUGIN)
 CFLAGS_prom_init.o += $(DISABLE_LATENT_ENTROPY_PLUGIN)
 CFLAGS_btext.o += $(DISABLE_LATENT_ENTROPY_PLUGIN)
@@ -19,6 +20,7 @@ CFLAGS_prom.o += $(DISABLE_LATENT_ENTROPY_PLUGIN)
 CFLAGS_prom_init.o += -fno-stack-protector
 CFLAGS_prom_init.o += -DDISABLE_BRANCH_PROFILING
 CFLAGS_prom_init.o += -ffreestanding
+CFLAGS_prom_init.o += $(call cc-option, -ftrivial-auto-var-init=uninitialized)
 
 ifdef CONFIG_FUNCTION_TRACER
 # Do not trace early boot code
@@ -78,6 +80,7 @@ obj-$(CONFIG_GENERIC_TBSYNC)	+= smp-tbsync.o
 obj-$(CONFIG_CRASH_DUMP)	+= crash_dump.o
 obj-$(CONFIG_FA_DUMP)		+= fadump.o
 obj-$(CONFIG_PRESERVE_FA_DUMP)	+= fadump.o
+obj-$(CONFIG_FSL_SOC)		+= fsl_pm.o
 ifdef CONFIG_PPC32
 obj-$(CONFIG_E500)		+= idle_e500.o
 endif
@@ -196,3 +199,6 @@ clean-files := vmlinux.lds
 # Force dependency (incbin is bad)
 $(obj)/vdso32_wrapper.o : $(obj)/vdso32/vdso32.so.dbg
 $(obj)/vdso64_wrapper.o : $(obj)/vdso64/vdso64.so.dbg
+
+# for cleaning
+subdir- += vdso32 vdso64

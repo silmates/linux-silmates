@@ -63,11 +63,23 @@ static int scsi_eh_try_stu(struct scsi_cmnd *scmd);
 static enum scsi_disposition scsi_try_to_abort_cmd(struct scsi_host_template *,
 						   struct scsi_cmnd *);
 
+#ifdef CONFIG_AHCI_IMX
+extern void *sg_io_buffer_hack;
+#else
+#define sg_io_buffer_hack NULL
+#endif
+
+/* called with shost->host_lock held */
 void scsi_eh_wakeup(struct Scsi_Host *shost)
 {
 	lockdep_assert_held(shost->host_lock);
 
 	if (scsi_host_busy(shost) == shost->host_failed) {
+		trace_scsi_eh_wakeup(shost);
+		wake_up_process(shost->ehandler);
+		SCSI_LOG_ERROR_RECOVERY(5, shost_printk(KERN_INFO, shost,
+			"Waking error handler thread\n"));
+	} else if ((shost->host_failed > 0) || (sg_io_buffer_hack != NULL)) {
 		trace_scsi_eh_wakeup(shost);
 		wake_up_process(shost->ehandler);
 		SCSI_LOG_ERROR_RECOVERY(5, shost_printk(KERN_INFO, shost,
@@ -135,6 +147,23 @@ static bool scsi_eh_should_retry_cmd(struct scsi_cmnd *cmd)
 	return true;
 }
 
+static void scsi_eh_complete_abort(struct scsi_cmnd *scmd, struct Scsi_Host *shost)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(shost->host_lock, flags);
+	list_del_init(&scmd->eh_entry);
+	/*
+	 * If the abort succeeds, and there is no further
+	 * EH action, clear the ->last_reset time.
+	 */
+	if (list_empty(&shost->eh_abort_list) &&
+	    list_empty(&shost->eh_cmd_q))
+		if (shost->eh_deadline != -1)
+			shost->last_reset = 0;
+	spin_unlock_irqrestore(shost->host_lock, flags);
+}
+
 /**
  * scmd_eh_abort_handler - Handle command aborts
  * @work:	command to be aborted.
@@ -152,6 +181,7 @@ scmd_eh_abort_handler(struct work_struct *work)
 		container_of(work, struct scsi_cmnd, abort_work.work);
 	struct scsi_device *sdev = scmd->device;
 	enum scsi_disposition rtn;
+	unsigned long flags;
 
 	if (scsi_host_eh_past_deadline(sdev->host)) {
 		SCSI_LOG_ERROR_RECOVERY(3,
@@ -175,12 +205,14 @@ scmd_eh_abort_handler(struct work_struct *work)
 				SCSI_LOG_ERROR_RECOVERY(3,
 					scmd_printk(KERN_WARNING, scmd,
 						    "retry aborted command\n"));
+				scsi_eh_complete_abort(scmd, sdev->host);
 				scsi_queue_insert(scmd, SCSI_MLQUEUE_EH_RETRY);
 				return;
 			} else {
 				SCSI_LOG_ERROR_RECOVERY(3,
 					scmd_printk(KERN_WARNING, scmd,
 						    "finish aborted command\n"));
+				scsi_eh_complete_abort(scmd, sdev->host);
 				scsi_finish_command(scmd);
 				return;
 			}
@@ -193,6 +225,9 @@ scmd_eh_abort_handler(struct work_struct *work)
 		}
 	}
 
+	spin_lock_irqsave(sdev->host->host_lock, flags);
+	list_del_init(&scmd->eh_entry);
+	spin_unlock_irqrestore(sdev->host->host_lock, flags);
 	scsi_eh_scmd_add(scmd);
 }
 
@@ -223,6 +258,8 @@ scsi_abort_command(struct scsi_cmnd *scmd)
 	spin_lock_irqsave(shost->host_lock, flags);
 	if (shost->eh_deadline != -1 && !shost->last_reset)
 		shost->last_reset = jiffies;
+	BUG_ON(!list_empty(&scmd->eh_entry));
+	list_add_tail(&scmd->eh_entry, &shost->eh_abort_list);
 	spin_unlock_irqrestore(shost->host_lock, flags);
 
 	scmd->eh_eflags |= SCSI_EH_ABORT_SCHEDULED;
@@ -460,8 +497,13 @@ static void scsi_report_sense(struct scsi_device *sdev,
 
 		if (sshdr->asc == 0x29) {
 			evt_type = SDEV_EVT_POWER_ON_RESET_OCCURRED;
-			sdev_printk(KERN_WARNING, sdev,
-				    "Power-on or device reset occurred\n");
+			/*
+			 * Do not print message if it is an expected side-effect
+			 * of runtime PM.
+			 */
+			if (!sdev->silence_suspend)
+				sdev_printk(KERN_WARNING, sdev,
+					    "Power-on or device reset occurred\n");
 		}
 
 		if (sshdr->asc == 0x2a && sshdr->ascq == 0x01) {
@@ -2212,8 +2254,15 @@ int scsi_error_handler(void *data)
 		if (kthread_should_stop())
 			break;
 
+		/*
+		 * Do not go to sleep, when there is host_failed when the
+		 * one-PRD per command workaroud is triggered.
+		 * Because that ata/scsi subsystem maybe hang, when CD_ROM
+		 * and HDD are accessed simultaneously.
+		 */
 		if ((shost->host_failed == 0 && shost->host_eh_scheduled == 0) ||
-		    shost->host_failed != scsi_host_busy(shost)) {
+		    ((shost->host_failed != scsi_host_busy(shost)) &&
+		    (sg_io_buffer_hack == NULL) && (shost->host_failed > 0))) {
 			SCSI_LOG_ERROR_RECOVERY(1,
 				shost_printk(KERN_INFO, shost,
 					     "scsi_eh_%d: sleeping\n",

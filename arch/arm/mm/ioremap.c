@@ -380,6 +380,13 @@ void __iomem *ioremap_wc(resource_size_t res_cookie, size_t size)
 }
 EXPORT_SYMBOL(ioremap_wc);
 
+void __iomem *ioremap_cache_ns(resource_size_t res_cookie, size_t size)
+{
+	return arch_ioremap_caller(res_cookie, size, MT_MEMORY_RW_NS,
+				   __builtin_return_address(0));
+}
+EXPORT_SYMBOL(ioremap_cache_ns);
+
 /*
  * Remap an arbitrary physical address space into the kernel virtual
  * address space as memory. Needed when the kernel wants to execute
@@ -478,4 +485,12 @@ EXPORT_SYMBOL_GPL(pci_remap_cfgspace);
 void __init early_ioremap_init(void)
 {
 	early_ioremap_setup();
+}
+
+bool arch_memremap_can_ram_remap(resource_size_t offset, size_t size,
+				 unsigned long flags)
+{
+	unsigned long pfn = PHYS_PFN(offset);
+
+	return memblock_is_map_memory(pfn);
 }

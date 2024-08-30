@@ -488,7 +488,7 @@ config I2C_BRCMSTB
 
 config I2C_CADENCE
 	tristate "Cadence I2C Controller"
-	depends on ARCH_ZYNQ || ARM64 || XTENSA
+	depends on ARCH_ZYNQ || ARM64 || XTENSA || COMPILE_TEST
 	help
 	  Say yes here to select Cadence I2C Host Controller. This controller is
 	  e.g. used by Xilinx Zynq.
@@ -677,7 +677,7 @@ config I2C_IMG
 
 config I2C_IMX
 	tristate "IMX I2C interface"
-	depends on ARCH_MXC || ARCH_LAYERSCAPE || COLDFIRE
+	depends on ARCH_MXC || ARCH_LAYERSCAPE || COLDFIRE || COMPILE_TEST
 	select I2C_SLAVE
 	help
 	  Say Y here if you want to use the IIC bus controller on
@@ -695,6 +695,14 @@ config I2C_IMX_LPI2C
 
 	  This driver can also be built as a module. If so, the module
 	  will be called i2c-imx-lpi2c.
+
+config I2C_IMX_FLEXIO
+	tristate "NXP IMX FLEXIO I2C MASTER"
+	depends on ARCH_MXC || COMPILE_TEST
+	default y
+	help
+          If you say yes to this option, support will be included for the
+	  I2C controller simulated by flexio embedded in NXP IMX8ULP SOCs.
 
 config I2C_IOP3XX
 	tristate "Intel IOPx3xx and IXP4xx on-chip I2C interface"
@@ -921,7 +929,7 @@ config I2C_QCOM_GENI
 
 config I2C_QUP
 	tristate "Qualcomm QUP based I2C controller"
-	depends on ARCH_QCOM
+	depends on ARCH_QCOM || COMPILE_TEST
 	help
 	  If you say yes to this option, support will be included for the
 	  built-in I2C interface on the Qualcomm SoCs.
@@ -948,6 +956,12 @@ config I2C_RK3X
 
 	  This driver can also be built as a module. If so, the module will
 	  be called i2c-rk3x.
+
+config I2C_RPBUS
+	tristate "I2C proxy bus over RPMSG"
+	depends on I2C && RPMSG
+	help
+	  This driver can support virtual i2c-rpmsg function.
 
 config HAVE_S3C2410_I2C
 	bool
@@ -1403,5 +1417,25 @@ config I2C_VIRTIO
 
           This driver can also be built as a module. If so, the module
           will be called i2c-virtio.
+
+config XEN_I2C_FRONTEND
+	tristate "Xen virtual i2c device support"
+	depends on XEN
+	default y
+	select XEN_XENBUS_FRONTEND
+	help
+	  This driver implements the front-end of the Xen virtual
+	  i2c device driver.  It communicates with a back-end driver
+	  in another domain which drives the actual i2c device.
+
+config XEN_I2C_BACKEND
+	tristate "Xen i2c-device backend driver"
+	depends on XEN_BACKEND
+	help
+	  The i2c-device backend driver allows the kernel to export its
+	  block devices to other guests.
+
+	  The corresponding Linux frontend driver is enabled by the
+	  CONFIG_XEN_I2C_FRONTEND configuration option.
 
 endmenu

@@ -668,6 +668,14 @@ struct page *get_signal_page(void)
 	return page;
 }
 
+/* Defer to generic check */
+asmlinkage void addr_limit_check_failed(void)
+{
+#ifdef CONFIG_MMU
+	addr_limit_user_check();
+#endif
+}
+
 #ifdef CONFIG_DEBUG_RSEQ
 asmlinkage void do_rseq_syscall(struct pt_regs *regs)
 {
@@ -708,6 +716,7 @@ static_assert(offsetof(siginfo_t, si_upper)	== 0x18);
 static_assert(offsetof(siginfo_t, si_pkey)	== 0x14);
 static_assert(offsetof(siginfo_t, si_perf_data)	== 0x10);
 static_assert(offsetof(siginfo_t, si_perf_type)	== 0x14);
+static_assert(offsetof(siginfo_t, si_perf_flags) == 0x18);
 static_assert(offsetof(siginfo_t, si_band)	== 0x0c);
 static_assert(offsetof(siginfo_t, si_fd)	== 0x10);
 static_assert(offsetof(siginfo_t, si_call_addr)	== 0x0c);

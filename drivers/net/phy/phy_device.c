@@ -240,13 +240,23 @@ static bool mdio_bus_phy_may_suspend(struct phy_device *phydev)
 	if (!drv || !phydrv->suspend)
 		return false;
 
-	/* PHY not attached? May suspend if the PHY has not already been
-	 * suspended as part of a prior call to phy_disconnect() ->
-	 * phy_detach() -> phy_suspend() because the parent netdev might be the
-	 * MDIO bus driver and clock gated at this point.
+	/* netdev is NULL has three cases:
+	 * - phy is not found
+	 * - phy is found, match to general phy driver
+	 * - phy is found, match to specifical phy driver
+	 *
+	 * Case 1: phy is not found, cannot communicate by MDIO bus.
+	 * Case 2: phy is found:
+	 *         if phy dev driver probe/bind err, netdev is not __open__
+	 *            status, mdio bus is unregistered.
+	 *         if phy is detached, phy had entered suspended status.
+	 * Case 3: phy is found, phy is detached, phy had entered suspended
+	 *         status.
+	 *
+	 * So, in here, it shouldn't set phy to suspend by calling mdio bus.
 	 */
 	if (!netdev)
-		goto out;
+		return false;
 
 	if (netdev->wol_enabled)
 		return false;
@@ -266,7 +276,6 @@ static bool mdio_bus_phy_may_suspend(struct phy_device *phydev)
 	if (device_may_wakeup(&netdev->dev))
 		return false;
 
-out:
 	return !phydev->suspended;
 }
 
@@ -276,6 +285,15 @@ static __maybe_unused int mdio_bus_phy_suspend(struct device *dev)
 
 	if (phydev->mac_managed_pm)
 		return 0;
+
+	/* Wakeup interrupts may occur during the system sleep transition when
+	 * the PHY is inaccessible. Set flag to postpone handling until the PHY
+	 * has resumed. Wait for concurrent interrupt handler to complete.
+	 */
+	if (phy_interrupt_is_valid(phydev)) {
+		phydev->irq_suspended = 1;
+		synchronize_irq(phydev->irq);
+	}
 
 	/* We must stop the state machine manually, otherwise it stops out of
 	 * control, possibly with the phydev->lock held. Upon resume, netdev
@@ -306,6 +324,12 @@ static __maybe_unused int mdio_bus_phy_resume(struct device *dev)
 
 	phydev->suspended_by_mdio_bus = 0;
 
+	/* If we manged to get here with the PHY state machine in a state neither
+	 * PHY_HALTED nor PHY_READY this is an indication that something went wrong
+	 * and we should most likely be using MAC managed PM and we are not.
+	 */
+	WARN_ON(phydev->state != PHY_HALTED && phydev->state != PHY_READY);
+
 	ret = phy_init_hw(phydev);
 	if (ret < 0)
 		return ret;
@@ -314,6 +338,20 @@ static __maybe_unused int mdio_bus_phy_resume(struct device *dev)
 	if (ret < 0)
 		return ret;
 no_resume:
+	if (phy_interrupt_is_valid(phydev)) {
+		phydev->irq_suspended = 0;
+		synchronize_irq(phydev->irq);
+
+		/* Rerun interrupts which were postponed by phy_interrupt()
+		 * because they occurred during the system sleep transition.
+		 */
+		if (phydev->irq_rerun) {
+			phydev->irq_rerun = 0;
+			enable_irq(phydev->irq);
+			irq_wake_thread(phydev->irq, phydev);
+		}
+	}
+
 	if (phydev->attached_dev && phydev->adjust_link)
 		phy_start_machine(phydev);
 
@@ -1746,6 +1784,9 @@ void phy_detach(struct phy_device *phydev)
 	    phy_driver_is_genphy_10g(phydev))
 		device_release_driver(&phydev->mdio.dev);
 
+	/* Assert the reset signal */
+	phy_device_reset(phydev, 1);
+
 	/*
 	 * The phydev might go away on the put_device() below, so avoid
 	 * a use-after-free bug by reading the underlying bus first.
@@ -1757,9 +1798,6 @@ void phy_detach(struct phy_device *phydev)
 		ndev_owner = dev->dev.parent->driver->owner;
 	if (ndev_owner != bus->owner)
 		module_put(bus->owner);
-
-	/* Assert the reset signal */
-	phy_device_reset(phydev, 1);
 }
 EXPORT_SYMBOL(phy_detach);
 

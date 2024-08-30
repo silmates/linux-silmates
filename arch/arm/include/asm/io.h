@@ -123,6 +123,7 @@ static inline u32 __raw_readl(const volatile void __iomem *addr)
 #define MT_DEVICE_NONSHARED	1
 #define MT_DEVICE_CACHED	2
 #define MT_DEVICE_WC		3
+#define MT_MEMORY_RW_NS		4
 /*
  * types 4 onwards can be found in asm/mach/map.h and are undefined
  * for ioremap
@@ -395,6 +396,8 @@ void __iomem *ioremap_wc(resource_size_t res_cookie, size_t size);
 #define ioremap_wc ioremap_wc
 #define ioremap_wt ioremap_wc
 
+void __iomem *ioremap_cache_ns(resource_size_t res_cookie, size_t size);
+
 void iounmap(volatile void __iomem *iomem_cookie);
 #define iounmap iounmap
 
@@ -436,6 +439,9 @@ extern void pci_iounmap(struct pci_dev *dev, void __iomem *addr);
 #define ARCH_HAS_VALID_PHYS_ADDR_RANGE
 extern int valid_phys_addr_range(phys_addr_t addr, size_t size);
 extern int valid_mmap_phys_addr_range(unsigned long pfn, size_t size);
+extern bool arch_memremap_can_ram_remap(resource_size_t offset, size_t size,
+					unsigned long flags);
+#define arch_memremap_can_ram_remap arch_memremap_can_ram_remap
 #endif
 
 /*

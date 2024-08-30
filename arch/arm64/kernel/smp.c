@@ -234,6 +234,7 @@ asmlinkage notrace void secondary_start_kernel(void)
 	 * Log the CPU info before it is marked online and might get read.
 	 */
 	cpuinfo_store_cpu();
+	store_cpu_topology(cpu);
 
 	/*
 	 * Enable GIC and timers.
@@ -242,7 +243,6 @@ asmlinkage notrace void secondary_start_kernel(void)
 
 	ipi_setup(cpu);
 
-	store_cpu_topology(cpu);
 	numa_add_cpu(cpu);
 
 	/*
@@ -949,10 +949,19 @@ static irqreturn_t ipi_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+#ifdef CONFIG_IMX_GPCV2
+extern void imx_gpcv2_raise_softirq(const struct cpumask *mask,
+		                                         unsigned int irq);
+#endif
+
 static void smp_cross_call(const struct cpumask *target, unsigned int ipinr)
 {
 	trace_ipi_raise(target, ipi_types[ipinr]);
 	__ipi_send_mask(ipi_desc[ipinr], target);
+
+#ifdef CONFIG_IMX_GPCV2
+	imx_gpcv2_raise_softirq(target, ipinr);
+#endif
 }
 
 static void ipi_setup(int cpu)

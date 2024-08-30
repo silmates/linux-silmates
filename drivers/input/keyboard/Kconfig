@@ -441,6 +441,16 @@ config KEYBOARD_MPR121
 	  To compile this driver as a module, choose M here: the
 	  module will be called mpr121_touchkey.
 
+config KEYBOARD_RPMSG
+       tristate "i.MX Rpmsg Keys Driver"
+       depends on RPMSG
+       depends on OF
+       help
+         This is rpmsg keys driver on i.mx7ulp, because some keys located
+         in M4 side.
+
+
+
 config KEYBOARD_SNVS_PWRKEY
 	tristate "IMX SNVS Power Key Driver"
 	depends on ARCH_MXC || (COMPILE_TEST && HAS_IOMEM)
@@ -451,6 +461,24 @@ config KEYBOARD_SNVS_PWRKEY
 
 	  To compile this driver as a module, choose M here; the
 	  module will be called snvs_pwrkey.
+
+config KEYBOARD_BBNSM_PWRKEY
+	tristate "NXP BBNSM Power Key Driver"
+	depends on ARCH_MXC || COMPILE_TEST
+	depends on OF
+	help
+	  This is the bbnsm powerkey driver for the NXP i.MX application
+	  processors.
+
+	  To compile this driver as a module, choose M here; the
+	  module will be called bbnsm_pwrkey.
+
+config KEYBOARD_IMX_SC_PWRKEY
+	tristate "IMX SC Power Key Driver"
+	depends on IMX_SCU
+	help
+	  This is the virtual snvs powerkey driver for NXP i.mx8Q/QXP family
+	  whose SCU hold snvs inside.
 
 config KEYBOARD_IMX
 	tristate "IMX keypad support"
@@ -556,7 +584,7 @@ config KEYBOARD_PMIC8XXX
 
 config KEYBOARD_SAMSUNG
 	tristate "Samsung keypad support"
-	depends on HAVE_CLK
+	depends on HAS_IOMEM && HAVE_CLK
 	select INPUT_MATRIXKMAP
 	help
 	  Say Y here if you want to use the keypad on your Samsung mobile

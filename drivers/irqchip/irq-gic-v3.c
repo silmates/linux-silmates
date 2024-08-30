@@ -145,6 +145,10 @@ enum gic_intid_range {
 	__INVALID_RANGE__
 };
 
+#ifdef CONFIG_GIC_GENTLE_CONFIG
+static u64 gic_mpidr_to_affinity(unsigned long mpidr);
+#endif
+
 static enum gic_intid_range __get_intid_range(irq_hw_number_t hwirq)
 {
 	switch (hwirq) {
@@ -206,11 +210,11 @@ static inline void __iomem *gic_dist_base(struct irq_data *d)
 	}
 }
 
-static void gic_do_wait_for_rwp(void __iomem *base)
+static void gic_do_wait_for_rwp(void __iomem *base, u32 bit)
 {
 	u32 count = 1000000;	/* 1s! */
 
-	while (readl_relaxed(base + GICD_CTLR) & GICD_CTLR_RWP) {
+	while (readl_relaxed(base + GICD_CTLR) & bit) {
 		count--;
 		if (!count) {
 			pr_err_ratelimited("RWP timeout, gone fishing\n");
@@ -224,13 +228,13 @@ static void gic_do_wait_for_rwp(void __iomem *base)
 /* Wait for completion of a distributor change */
 static void gic_dist_wait_for_rwp(void)
 {
-	gic_do_wait_for_rwp(gic_data.dist_base);
+	gic_do_wait_for_rwp(gic_data.dist_base, GICD_CTLR_RWP);
 }
 
 /* Wait for completion of a redistributor change */
 static void gic_redist_wait_for_rwp(void)
 {
-	gic_do_wait_for_rwp(gic_data_rdist_rd_base());
+	gic_do_wait_for_rwp(gic_data_rdist_rd_base(), GICR_CTLR_RWP);
 }
 
 #ifdef CONFIG_ARM64
@@ -556,7 +560,8 @@ static void gic_irq_nmi_teardown(struct irq_data *d)
 
 static void gic_eoi_irq(struct irq_data *d)
 {
-	gic_write_eoir(gic_irq(d));
+	write_gicreg(gic_irq(d), ICC_EOIR1_EL1);
+	isb();
 }
 
 static void gic_eoimode1_eoi_irq(struct irq_data *d)
@@ -578,6 +583,9 @@ static int gic_set_type(struct irq_data *d, unsigned int type)
 	void __iomem *base;
 	u32 offset, index;
 	int ret;
+#ifdef CONFIG_GIC_GENTLE_CONFIG
+	u64 affinity;
+#endif
 
 	range = get_intid_range(d);
 
@@ -597,6 +605,16 @@ static int gic_set_type(struct irq_data *d, unsigned int type)
 		base = gic_data.dist_base;
 		rwp_wait = gic_dist_wait_for_rwp;
 	}
+
+#ifdef CONFIG_GIC_GENTLE_CONFIG
+	/* In a SoC running multiple OSes on ARM clusters sharing the same GIC,
+	 * set the affinity of the SPI here.
+	 * This allows to set the affinity to only the interrupts
+	 * registered by the cluster.
+	 */
+	affinity = gic_mpidr_to_affinity(cpu_logical_map(smp_processor_id()));
+	gic_write_irouter(affinity, base + GICD_IROUTER + irq * 8);
+#endif
 
 	offset = convert_offset_index(d, GICD_ICFGR, &index);
 
@@ -640,8 +658,36 @@ static void gic_deactivate_unhandled(u32 irqnr)
 		if (irqnr < 8192)
 			gic_write_dir(irqnr);
 	} else {
-		gic_write_eoir(irqnr);
+		write_gicreg(irqnr, ICC_EOIR1_EL1);
+		isb();
 	}
+}
+
+/*
+ * Follow a read of the IAR with any HW maintenance that needs to happen prior
+ * to invoking the relevant IRQ handler. We must do two things:
+ *
+ * (1) Ensure instruction ordering between a read of IAR and subsequent
+ *     instructions in the IRQ handler using an ISB.
+ *
+ *     It is possible for the IAR to report an IRQ which was signalled *after*
+ *     the CPU took an IRQ exception as multiple interrupts can race to be
+ *     recognized by the GIC, earlier interrupts could be withdrawn, and/or
+ *     later interrupts could be prioritized by the GIC.
+ *
+ *     For devices which are tightly coupled to the CPU, such as PMUs, a
+ *     context synchronization event is necessary to ensure that system
+ *     register state is not stale, as these may have been indirectly written
+ *     *after* exception entry.
+ *
+ * (2) Deactivate the interrupt when EOI mode 1 is in use.
+ */
+static inline void gic_complete_ack(u32 irqnr)
+{
+	if (static_branch_likely(&supports_deactivate_key))
+		write_gicreg(irqnr, ICC_EOIR1_EL1);
+
+	isb();
 }
 
 static inline void gic_handle_nmi(u32 irqnr, struct pt_regs *regs)
@@ -652,8 +698,8 @@ static inline void gic_handle_nmi(u32 irqnr, struct pt_regs *regs)
 	if (irqs_enabled)
 		nmi_enter();
 
-	if (static_branch_likely(&supports_deactivate_key))
-		gic_write_eoir(irqnr);
+	gic_complete_ack(irqnr);
+
 	/*
 	 * Leave the PSR.I bit set to prevent other NMIs to be
 	 * received while handling this one.
@@ -723,10 +769,7 @@ static asmlinkage void __exception_irq_entry gic_handle_irq(struct pt_regs *regs
 		gic_arch_enable_irqs();
 	}
 
-	if (static_branch_likely(&supports_deactivate_key))
-		gic_write_eoir(irqnr);
-	else
-		isb();
+	gic_complete_ack(irqnr);
 
 	if (handle_domain_irq(gic_data.domain, irqnr, regs)) {
 		WARN_ONCE(true, "Unexpected interrupt received!\n");
@@ -775,9 +818,25 @@ static bool gic_has_group0(void)
 static void __init gic_dist_init(void)
 {
 	unsigned int i;
+#ifndef CONFIG_GIC_GENTLE_CONFIG
 	u64 affinity;
+#endif
 	void __iomem *base = gic_data.dist_base;
 	u32 val;
+
+#ifdef CONFIG_GIC_GENTLE_CONFIG
+       /* In a SoC running multiple OSes on ARM clusters sharing the same GIC,
+        * we take care of not re-configuring the distributor
+        * when another OS already did it, else this could interfere
+        * with the on-going interrupts directed to the other OS.
+        */
+       u32 gicd_ctlr = readl_relaxed(base + GICD_CTLR);
+
+       if (gicd_ctlr & (GICD_CTLR_ENABLE_G1A | GICD_CTLR_ENABLE_G1)) {
+               printk(KERN_INFO "GIC Distributor already configured: skip gic_dist_init\n");
+               return;
+       }
+#endif
 
 	/* Disable the distributor */
 	writel_relaxed(0, base + GICD_CTLR);
@@ -819,6 +878,14 @@ static void __init gic_dist_init(void)
 	/* Enable distributor with ARE, Group1 */
 	writel_relaxed(val, base + GICD_CTLR);
 
+#ifndef CONFIG_GIC_GENTLE_CONFIG
+	/* In a SoC running multiple OSes on ARM clusters sharing the same GIC,
+	 * do not set the affinity to all interrupts as this
+	 * would conflict with the other cluster's GIC configuration.
+	 * This is now done in function gic_set_type() (called by request_irq)
+	 * which allows to limit this to the interrupts registered by the
+	 * cluster.
+	 */
 	/*
 	 * Set all global interrupts to the boot CPU only. ARE must be
 	 * enabled.
@@ -829,6 +896,7 @@ static void __init gic_dist_init(void)
 
 	for (i = 0; i < GIC_ESPI_NR; i++)
 		gic_write_irouter(affinity, base + GICD_IROUTERnE + i * 8);
+#endif
 }
 
 static int gic_iterate_rdists(int (*fn)(struct redist_region *, void __iomem *))
@@ -919,6 +987,22 @@ static int __gic_update_rdist_properties(struct redist_region *region,
 					 void __iomem *ptr)
 {
 	u64 typer = gic_read_typer(ptr + GICR_TYPER);
+
+	/* Boot-time cleanip */
+	if ((typer & GICR_TYPER_VLPIS) && (typer & GICR_TYPER_RVPEID)) {
+		u64 val;
+
+		/* Deactivate any present vPE */
+		val = gicr_read_vpendbaser(ptr + SZ_128K + GICR_VPENDBASER);
+		if (val & GICR_VPENDBASER_Valid)
+			gicr_write_vpendbaser(GICR_VPENDBASER_PendingLast,
+					      ptr + SZ_128K + GICR_VPENDBASER);
+
+		/* Mark the VPE table as invalid */
+		val = gicr_read_vpropbaser(ptr + SZ_128K + GICR_VPROPBASER);
+		val &= ~GICR_VPROPBASER_4_1_VALID;
+		gicr_write_vpropbaser(val, ptr + SZ_128K + GICR_VPROPBASER);
+	}
 
 	gic_data.rdists.has_vlpis &= !!(typer & GICR_TYPER_VLPIS);
 
@@ -1450,6 +1534,12 @@ static int gic_irq_domain_translate(struct irq_domain *d,
 		if(fwspec->param_count != 2)
 			return -EINVAL;
 
+		if (fwspec->param[0] < 16) {
+			pr_err(FW_BUG "Illegal GSI%d translation request\n",
+			       fwspec->param[0]);
+			return -EINVAL;
+		}
+
 		*hwirq = fwspec->param[0];
 		*type = fwspec->param[1];
 
@@ -1842,7 +1932,7 @@ static void __init gic_populate_ppi_partitions(struct device_node *gic_node)
 
 	gic_data.ppi_descs = kcalloc(gic_data.ppi_nr, sizeof(*gic_data.ppi_descs), GFP_KERNEL);
 	if (!gic_data.ppi_descs)
-		return;
+		goto out_put_node;
 
 	nr_parts = of_get_child_count(parts_node);
 
@@ -1883,12 +1973,15 @@ static void __init gic_populate_ppi_partitions(struct device_node *gic_node)
 				continue;
 
 			cpu = of_cpu_node_to_id(cpu_node);
-			if (WARN_ON(cpu < 0))
+			if (WARN_ON(cpu < 0)) {
+				of_node_put(cpu_node);
 				continue;
+			}
 
 			pr_cont("%pOF[%d] ", cpu_node, cpu);
 
 			cpumask_set_cpu(cpu, &part->mask);
+			of_node_put(cpu_node);
 		}
 
 		pr_cont("}\n");

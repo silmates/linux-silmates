@@ -206,9 +206,14 @@ static struct dev_iommu *dev_iommu_get(struct device *dev)
 
 static void dev_iommu_free(struct device *dev)
 {
-	iommu_fwspec_free(dev);
-	kfree(dev->iommu);
+	struct dev_iommu *param = dev->iommu;
+
 	dev->iommu = NULL;
+	if (param->fwspec) {
+		fwnode_handle_put(param->fwspec->iommu_fwnode);
+		kfree(param->fwspec);
+	}
+	kfree(param);
 }
 
 static int __iommu_probe_device(struct device *dev, struct list_head *group_list)
@@ -287,11 +292,11 @@ int iommu_probe_device(struct device *dev)
 	 */
 	mutex_lock(&group->mutex);
 	iommu_alloc_default_domain(group, dev);
-	mutex_unlock(&group->mutex);
 
 	if (group->default_domain) {
 		ret = __iommu_attach_device(group->default_domain, dev);
 		if (ret) {
+			mutex_unlock(&group->mutex);
 			iommu_group_put(group);
 			goto err_release;
 		}
@@ -299,6 +304,7 @@ int iommu_probe_device(struct device *dev)
 
 	iommu_create_device_direct_mappings(group, dev);
 
+	mutex_unlock(&group->mutex);
 	iommu_group_put(group);
 
 	if (ops->probe_finalize)
@@ -2807,16 +2813,22 @@ void iommu_put_resv_regions(struct device *dev, struct list_head *list)
  * @list: reserved region list for device
  *
  * IOMMU drivers can use this to implement their .put_resv_regions() callback
- * for simple reservations. Memory allocated for each reserved region will be
- * freed. If an IOMMU driver allocates additional resources per region, it is
- * going to have to implement a custom callback.
+ * for simple reservations. If a per region callback is provided that will be
+ * used to free all memory allocations associated with the reserved region or
+ * else just free up the memory for the regions. If an IOMMU driver allocates
+ * additional resources per region, it is going to have to implement a custom
+ * callback.
  */
 void generic_iommu_put_resv_regions(struct device *dev, struct list_head *list)
 {
 	struct iommu_resv_region *entry, *next;
 
-	list_for_each_entry_safe(entry, next, list, list)
-		kfree(entry);
+	list_for_each_entry_safe(entry, next, list, list) {
+		if (entry->free)
+			entry->free(dev, entry);
+		else
+			kfree(entry);
+	}
 }
 EXPORT_SYMBOL(generic_iommu_put_resv_regions);
 

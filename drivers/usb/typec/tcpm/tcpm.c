@@ -324,6 +324,7 @@ struct tcpm_port {
 
 	bool attached;
 	bool connected;
+	bool registered;
 	bool pd_supported;
 	enum typec_port_type port_type;
 
@@ -3109,20 +3110,11 @@ static int tcpm_pd_select_pdo(struct tcpm_port *port, int *sink_pdo,
 			continue;
 		}
 
-		switch (type) {
-		case PDO_TYPE_FIXED:
-		case PDO_TYPE_VAR:
+		if (type == PDO_TYPE_FIXED || type == PDO_TYPE_VAR) {
 			src_ma = pdo_max_current(pdo);
 			src_mw = src_ma * min_src_mv / 1000;
-			break;
-		case PDO_TYPE_BATT:
+		} else if (type == PDO_TYPE_BATT) {
 			src_mw = pdo_max_power(pdo);
-			break;
-		case PDO_TYPE_APDO:
-			continue;
-		default:
-			tcpm_log(port, "Invalid source PDO type, ignoring");
-			continue;
 		}
 
 		for (j = 0; j < port->nr_snk_pdo; j++) {
@@ -3566,6 +3558,8 @@ static int tcpm_src_attach(struct tcpm_port *port)
 	if (port->attached)
 		return 0;
 
+	tcpm_set_cc(port, tcpm_rp_cc(port));
+
 	ret = tcpm_set_polarity(port, polarity);
 	if (ret < 0)
 		return ret;
@@ -3712,6 +3706,8 @@ static int tcpm_snk_attach(struct tcpm_port *port)
 
 	if (port->attached)
 		return 0;
+
+	tcpm_set_cc(port, TYPEC_CC_RD);
 
 	ret = tcpm_set_polarity(port, port->cc2 != TYPEC_CC_OPEN ?
 				TYPEC_POLARITY_CC2 : TYPEC_POLARITY_CC1);
@@ -4110,11 +4106,7 @@ static void run_state_machine(struct tcpm_port *port)
 				       tcpm_try_src(port) ? SRC_TRY
 							  : SNK_ATTACHED,
 				       0);
-		else
-			/* Wait for VBUS, but not forever */
-			tcpm_set_state(port, PORT_RESET, PD_T_PS_SOURCE_ON);
 		break;
-
 	case SRC_TRY:
 		port->try_src_count++;
 		tcpm_set_cc(port, tcpm_rp_cc(port));
@@ -4162,7 +4154,11 @@ static void run_state_machine(struct tcpm_port *port)
 		ret = tcpm_snk_attach(port);
 		if (ret < 0)
 			tcpm_set_state(port, SNK_UNATTACHED, 0);
-		else
+		else if (port->port_type == TYPEC_PORT_SRC &&
+			 port->typec_caps.data == TYPEC_PORT_DRD) {
+			tcpm_typec_connect(port);
+			tcpm_log(port, "Keep at SNK_ATTACHED for USB data.");
+		} else
 			tcpm_set_state(port, SNK_STARTUP, 0);
 		break;
 	case SNK_STARTUP:
@@ -5159,7 +5155,8 @@ static void _tcpm_pd_vbus_off(struct tcpm_port *port)
 	case SNK_TRYWAIT_DEBOUNCE:
 		break;
 	case SNK_ATTACH_WAIT:
-		tcpm_set_state(port, SNK_UNATTACHED, 0);
+	case SNK_DEBOUNCED:
+		/* Do nothing, as TCPM is still waiting for vbus to reaach VSAFE5V to connect */
 		break;
 
 	case SNK_NEGOTIATE_CAPABILITIES:
@@ -5265,6 +5262,10 @@ static void _tcpm_pd_vbus_vsafe0v(struct tcpm_port *port)
 	case PR_SWAP_SNK_SRC_SINK_OFF:
 	case PR_SWAP_SNK_SRC_SOURCE_ON:
 		/* Do nothing, vsafe0v is expected during transition */
+		break;
+	case SNK_ATTACH_WAIT:
+	case SNK_DEBOUNCED:
+		/*Do nothing, still waiting for VSAFE5V for connect */
 		break;
 	default:
 		if (port->pwr_role == TYPEC_SINK && port->auto_vbus_discharge_enabled)
@@ -6086,7 +6087,7 @@ static enum power_supply_property tcpm_psy_props[] = {
 static int tcpm_psy_get_online(struct tcpm_port *port,
 			       union power_supply_propval *val)
 {
-	if (port->vbus_charge) {
+	if (port->vbus_present && tcpm_port_is_sink(port)) {
 		if (port->pps_data.active)
 			val->intval = TCPM_PSY_PROG_ONLINE;
 		else
@@ -6209,7 +6210,14 @@ static int tcpm_psy_set_prop(struct power_supply *psy,
 			     const union power_supply_propval *val)
 {
 	struct tcpm_port *port = power_supply_get_drvdata(psy);
-	int ret;
+	int ret = 0;
+
+	/*
+	 * All the properties below are related to USB PD. The check needs to be
+	 * property specific when a non-pd related property is added.
+	 */
+	if (!port->pd_supported)
+		return -EOPNOTSUPP;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
@@ -6227,6 +6235,9 @@ static int tcpm_psy_set_prop(struct power_supply *psy,
 			ret = -EINVAL;
 		else
 			ret = tcpm_pps_set_op_curr(port, val->intval / 1000);
+		break;
+	case POWER_SUPPLY_PROP_USB_TYPE:
+		port->usb_type = val->intval;
 		break;
 	default:
 		ret = -EINVAL;
@@ -6250,6 +6261,10 @@ static int tcpm_psy_prop_writeable(struct power_supply *psy,
 }
 
 static enum power_supply_usb_type tcpm_psy_usb_types[] = {
+	POWER_SUPPLY_USB_TYPE_SDP,
+	POWER_SUPPLY_USB_TYPE_DCP,
+	POWER_SUPPLY_USB_TYPE_CDP,
+	POWER_SUPPLY_USB_TYPE_ACA,
 	POWER_SUPPLY_USB_TYPE_C,
 	POWER_SUPPLY_USB_TYPE_PD,
 	POWER_SUPPLY_USB_TYPE_PD_PPS,
@@ -6295,7 +6310,8 @@ static enum hrtimer_restart state_machine_timer_handler(struct hrtimer *timer)
 {
 	struct tcpm_port *port = container_of(timer, struct tcpm_port, state_machine_timer);
 
-	kthread_queue_work(port->wq, &port->state_machine);
+	if (port->registered)
+		kthread_queue_work(port->wq, &port->state_machine);
 	return HRTIMER_NORESTART;
 }
 
@@ -6303,7 +6319,8 @@ static enum hrtimer_restart vdm_state_machine_timer_handler(struct hrtimer *time
 {
 	struct tcpm_port *port = container_of(timer, struct tcpm_port, vdm_state_machine_timer);
 
-	kthread_queue_work(port->wq, &port->vdm_state_machine);
+	if (port->registered)
+		kthread_queue_work(port->wq, &port->vdm_state_machine);
 	return HRTIMER_NORESTART;
 }
 
@@ -6311,7 +6328,8 @@ static enum hrtimer_restart enable_frs_timer_handler(struct hrtimer *timer)
 {
 	struct tcpm_port *port = container_of(timer, struct tcpm_port, enable_frs_timer);
 
-	kthread_queue_work(port->wq, &port->enable_frs);
+	if (port->registered)
+		kthread_queue_work(port->wq, &port->enable_frs);
 	return HRTIMER_NORESTART;
 }
 
@@ -6319,7 +6337,8 @@ static enum hrtimer_restart send_discover_timer_handler(struct hrtimer *timer)
 {
 	struct tcpm_port *port = container_of(timer, struct tcpm_port, send_discover_timer);
 
-	kthread_queue_work(port->wq, &port->send_discover_work);
+	if (port->registered)
+		kthread_queue_work(port->wq, &port->send_discover_work);
 	return HRTIMER_NORESTART;
 }
 
@@ -6407,6 +6426,7 @@ struct tcpm_port *tcpm_register_port(struct device *dev, struct tcpc_dev *tcpc)
 	typec_port_register_altmodes(port->typec_port,
 				     &tcpm_altmode_ops, port,
 				     port->port_altmode, ALTMODE_DISCOVERY_MAX);
+	port->registered = true;
 
 	mutex_lock(&port->lock);
 	tcpm_init(port);
@@ -6428,6 +6448,9 @@ void tcpm_unregister_port(struct tcpm_port *port)
 {
 	int i;
 
+	port->registered = false;
+	kthread_destroy_worker(port->wq);
+
 	hrtimer_cancel(&port->send_discover_timer);
 	hrtimer_cancel(&port->enable_frs_timer);
 	hrtimer_cancel(&port->vdm_state_machine_timer);
@@ -6439,7 +6462,6 @@ void tcpm_unregister_port(struct tcpm_port *port)
 	typec_unregister_port(port->typec_port);
 	usb_role_switch_put(port->role_sw);
 	tcpm_debugfs_exit(port);
-	kthread_destroy_worker(port->wq);
 }
 EXPORT_SYMBOL_GPL(tcpm_unregister_port);
 

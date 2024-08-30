@@ -21,7 +21,12 @@
 #define _CRYPTO_TESTMGR_H
 
 #include <linux/oid_registry.h>
+#include <linux/netlink.h>
 
+#define MAX_DIGEST_SIZE		64
+#define MAX_TAP			8
+
+#define MAX_KEYLEN		160
 #define MAX_IVLEN		32
 
 /*
@@ -146,6 +151,21 @@ struct drbg_testvec {
 	size_t expectedlen;
 };
 
+struct tls_testvec {
+	char *key;	/* wrapped keys for encryption and authentication */
+	char *iv;	/* initialization vector */
+	char *input;	/* input data */
+	char *assoc;	/* associated data: seq num, type, version, input len */
+	char *result;	/* result data */
+	unsigned char fail;	/* the test failure is expected */
+	unsigned char novrfy;	/* dec verification failure expected */
+	unsigned char klen;	/* key length */
+	unsigned short ilen;	/* input data length */
+	unsigned short alen;	/* associated data length */
+	unsigned short rlen;	/* result length */
+	unsigned short authlen;	/* authentication length */
+};
+
 struct akcipher_testvec {
 	const unsigned char *key;
 	const unsigned char *params;
@@ -175,6 +195,531 @@ struct kpp_testvec {
 };
 
 static const char zeroed_string[48];
+
+/*
+ * TLS1.1 synthetic test vectors
+ */
+static struct tls_testvec tls_enc_tv_template[] = {
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkey20benckeyis16_bytes",
+		.klen	= 8 + 20 + 16,
+		.iv	= "iv0123456789abcd",
+		.input	= "iv0123456789abcdSingle block msg",
+		.ilen	= 32,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x01\x00\x10",
+		.alen	= 13,
+		.result = "\x4a\xd8\x67\x27\xec\x74\x48\x8e"
+			"\x5a\xca\xba\x13\x9c\xcf\x02\xae"
+			"\x6d\xc2\xeb\x76\xa1\x3b\xe2\x57"
+			"\x64\xaf\x38\x42\x67\x8e\x57\x3e"
+			"\xe7\x24\x44\x73\x0a\x23\x77\x07"
+			"\xbb\xc8\x1f\x4e\x2c\xd4\x56\xa4"
+			"\x16\x15\x38\x91\xed\x21\xec\x36"
+			"\xd3\x05\xeb\x10\x04\x00\x4e\xc0",
+		.rlen	= 16 + 20 + 12 + 16,
+		.authlen = 20,
+	},
+	/* Payload with payload len as zero leads to descriptor error.
+	 */
+#if 0
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkey20benckeyis16_bytes",
+		.klen	= 8 + 20 + 16,
+		.iv	= "iv0123456789abcd",
+		.input	= "iv0123456789abcd",
+		.ilen	= 16,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x02\x00\x00",
+		.alen	= 13,
+		.result	= "\x31\x41\x4e\xea\x70\xc2\xb3\xa7"
+			"\x3e\xcb\x1a\xee\xa9\xe1\xfc\xc4"
+			"\x5d\xe0\xee\xaa\x6a\x83\x34\xb9"
+			"\x3d\x9c\x20\x44\x09\xca\x94\xb6"
+			"\x2d\xf9\xbd\x8a\x7b\x88\xdf\xec"
+			"\xd5\xbc\x27\x61\xa9\x61\x56\xb6",
+		.rlen	= 20 + 12 + 16,
+		.authlen = 20,
+	},
+#endif
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkey20benckeyis16_bytes",
+		.klen	= 8 + 20 + 16,
+		.iv	= "iv0123456789abcd",
+		.input	= "iv0123456789abcd"
+			"285 bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext285"
+			" bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext285"
+			" bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext285"
+			" bytes plaintext285 bytes plaintext",
+		.ilen	= 285 + 16,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x01\x01\x1d",
+		.alen	= 13,
+		.result = "\x4a\xd8\x67\x27\xec\x74\x48\x8e"
+			"\x5a\xca\xba\x13\x9c\xcf\x02\xae"
+			"\x79\x03\xd4\x14\x1c\x57\x86\x48"
+			"\xec\x5e\x59\x21\x41\xff\xb9\x2f"
+			"\x66\xe9\xc1\xc9\xe3\x01\x8c\x10"
+			"\xb6\xde\x8f\xb1\xc0\x66\x93\xc5"
+			"\xac\x10\xd6\x86\x35\x63\x2b\xc0"
+			"\x7a\x40\xfd\x0e\x39\x0a\xf5\x18"
+			"\x1a\xf7\x99\x3c\x45\xd8\xe4\x92"
+			"\xd3\x39\x83\x58\x04\x8f\xe0\x95"
+			"\x24\xee\x62\xc5\xdf\xf6\x4c\x25"
+			"\x22\x0e\xf7\xe3\x33\x04\x88\x5b"
+			"\x70\xf8\xf5\x39\x24\xa1\x58\xd2"
+			"\xf9\x4c\xf9\x64\x0a\xcf\x9f\x36"
+			"\x23\x43\xda\x44\xfc\x68\xd7\x23"
+			"\x83\xc2\xb7\xc6\xd7\x7f\xd2\xec"
+			"\xef\xd7\xfc\x6a\x64\xe9\x70\xdc"
+			"\x53\x98\xfa\xf2\x41\x24\x87\xbc"
+			"\x57\xc9\x1c\x38\xff\x4b\x95\x42"
+			"\xb5\x2c\xfe\xd2\x34\xe2\xa7\x28"
+			"\x61\x4a\x1d\xe0\x0f\x97\x62\x08"
+			"\xa6\xa9\x5c\x89\x5e\x42\x60\x71"
+			"\xda\xd9\xba\x95\x6f\x87\x9c\x00"
+			"\x7e\x0c\x7a\x6f\xb4\x99\x7e\x0e"
+			"\x6a\xe9\xab\x12\xda\x95\x25\x83"
+			"\x8f\xa2\xc2\x91\xb5\x3f\xae\xc3"
+			"\xf9\x03\xc9\x6d\xe7\xe7\x46\x61"
+			"\xdc\xbc\xf1\x17\xcc\x93\x33\xa5"
+			"\x06\x54\x45\x79\xcb\x1c\x67\x87"
+			"\x87\x35\x9b\xc3\xfd\x3c\xcc\x43"
+			"\xec\xac\xef\xfd\x3b\x35\xb3\xde"
+			"\x7d\x82\x57\x49\xc5\xe8\x47\xbe"
+			"\x70\xf2\xbf\x1c\x98\x1e\x3d\xa4"
+			"\x25\xa2\x65\x6c\xca\x04\x9a\x1d"
+			"\x01\x08\xa6\x36\xbe\x89\xd1\x4e"
+			"\x87\x7f\xae\x70\x79\x0d\x42\x2d"
+			"\x16\x6f\x00\xf5\x76\x51\xb4\x37"
+			"\xda\xc2\x54\xa6\x39\x16\x26\x21"
+			"\xb5\x78\x6e\xa1\xbb\x25\x80\xdf"
+			"\xdb\x99\xdb\xc2\xec\x83\xf5\x88"
+			"\x6d\x50\xba\xdd\x30\xb1\x72\xd9"
+			"\xfc\xce\x7a\xcb\xcf\xd9\x0d\xc9",
+		.rlen	= 285 + 20 + 15 + 16,
+		.authlen = 20,
+	}
+};
+
+static struct tls_testvec tls_dec_tv_template[] = {
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkey20benckeyis16_bytes",
+		.klen	= 8 + 20 + 16,
+		.iv	= "\x4a\xd8\x67\x27\xec\x74\x48\x8e"
+			"\x5a\xca\xba\x13\x9c\xcf\x02\xae",
+		.input	= "\x6d\xc2\xeb\x76\xa1\x3b\xe2\x57"
+			"\x64\xaf\x38\x42\x67\x8e\x57\x3e"
+			"\xe7\x24\x44\x73\x0a\x23\x77\x07"
+			"\xbb\xc8\x1f\x4e\x2c\xd4\x56\xa4"
+			"\x16\x15\x38\x91\xed\x21\xec\x36"
+			"\xd3\x05\xeb\x10\x04\x00\x4e\xc0",
+		.ilen	= 16 + 20 + 12,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x01\x00\x30",
+		.alen	= 13,
+		.result	= "Single block msg",
+		.rlen	= 16,
+		.authlen = 20,
+	},
+	/* Payload with payload len as zero leads to descriptor error.
+	 */
+#if 0
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkey20benckeyis16_bytes",
+		.klen	= 8 + 20 + 16,
+		.iv	= "\x31\x41\x4e\xea\x70\xc2\xb3\xa7"
+			"\x3e\xcb\x1a\xee\xa9\xe1\xfc\xc4",
+		.input	= "\x5d\xe0\xee\xaa\x6a\x83\x34\xb9"
+			"\x3d\x9c\x20\x44\x09\xca\x94\xb6"
+			"\x2d\xf9\xbd\x8a\x7b\x88\xdf\xec"
+			"\xd5\xbc\x27\x61\xa9\x61\x56\xb6",
+		.ilen	= 20 + 12,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x02\x00\x20",
+		.alen	= 13,
+		.result	= "",
+		.rlen	= 0,
+		.authlen = 20,
+	},
+#endif
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkey20benckeyis16_bytes",
+		.klen	= 8 + 20 + 16,
+		.iv	= "\x4a\xd8\x67\x27\xec\x74\x48\x8e"
+			"\x5a\xca\xba\x13\x9c\xcf\x02\xae",
+		.input	= "\x79\x03\xd4\x14\x1c\x57\x86\x48"
+			"\xec\x5e\x59\x21\x41\xff\xb9\x2f"
+			"\x66\xe9\xc1\xc9\xe3\x01\x8c\x10"
+			"\xb6\xde\x8f\xb1\xc0\x66\x93\xc5"
+			"\xac\x10\xd6\x86\x35\x63\x2b\xc0"
+			"\x7a\x40\xfd\x0e\x39\x0a\xf5\x18"
+			"\x1a\xf7\x99\x3c\x45\xd8\xe4\x92"
+			"\xd3\x39\x83\x58\x04\x8f\xe0\x95"
+			"\x24\xee\x62\xc5\xdf\xf6\x4c\x25"
+			"\x22\x0e\xf7\xe3\x33\x04\x88\x5b"
+			"\x70\xf8\xf5\x39\x24\xa1\x58\xd2"
+			"\xf9\x4c\xf9\x64\x0a\xcf\x9f\x36"
+			"\x23\x43\xda\x44\xfc\x68\xd7\x23"
+			"\x83\xc2\xb7\xc6\xd7\x7f\xd2\xec"
+			"\xef\xd7\xfc\x6a\x64\xe9\x70\xdc"
+			"\x53\x98\xfa\xf2\x41\x24\x87\xbc"
+			"\x57\xc9\x1c\x38\xff\x4b\x95\x42"
+			"\xb5\x2c\xfe\xd2\x34\xe2\xa7\x28"
+			"\x61\x4a\x1d\xe0\x0f\x97\x62\x08"
+			"\xa6\xa9\x5c\x89\x5e\x42\x60\x71"
+			"\xda\xd9\xba\x95\x6f\x87\x9c\x00"
+			"\x7e\x0c\x7a\x6f\xb4\x99\x7e\x0e"
+			"\x6a\xe9\xab\x12\xda\x95\x25\x83"
+			"\x8f\xa2\xc2\x91\xb5\x3f\xae\xc3"
+			"\xf9\x03\xc9\x6d\xe7\xe7\x46\x61"
+			"\xdc\xbc\xf1\x17\xcc\x93\x33\xa5"
+			"\x06\x54\x45\x79\xcb\x1c\x67\x87"
+			"\x87\x35\x9b\xc3\xfd\x3c\xcc\x43"
+			"\xec\xac\xef\xfd\x3b\x35\xb3\xde"
+			"\x7d\x82\x57\x49\xc5\xe8\x47\xbe"
+			"\x70\xf2\xbf\x1c\x98\x1e\x3d\xa4"
+			"\x25\xa2\x65\x6c\xca\x04\x9a\x1d"
+			"\x01\x08\xa6\x36\xbe\x89\xd1\x4e"
+			"\x87\x7f\xae\x70\x79\x0d\x42\x2d"
+			"\x16\x6f\x00\xf5\x76\x51\xb4\x37"
+			"\xda\xc2\x54\xa6\x39\x16\x26\x21"
+			"\xb5\x78\x6e\xa1\xbb\x25\x80\xdf"
+			"\xdb\x99\xdb\xc2\xec\x83\xf5\x88"
+			"\x6d\x50\xba\xdd\x30\xb1\x72\xd9"
+			"\xfc\xce\x7a\xcb\xcf\xd9\x0d\xc9",
+		.ilen	= 285 + 20 + 15,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x01\x01\x40",
+		.alen	= 13,
+		.result	= "285 bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext285"
+			" bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext285"
+			" bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext",
+		.rlen	= 285,
+		.authlen = 20,
+	}
+};
+
+/*
+ * TLS1.2 synthetic test vectors
+ */
+static struct tls_testvec tls12_enc_tv_template[] = {
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkeysizeis_32bytes_enckeyis16_bytes",
+		.klen	= 8 + 32 + 16,
+		.iv	= "iv0123456789abcd",
+		.input	= "iv0123456789abcdSingle block msg",
+		.ilen	= 32,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x01\x00\x10",
+		.alen	= 13,
+		.result = "\x4a\xd8\x67\x27\xec\x74\x48\x8e"
+			"\x5a\xca\xba\x13\x9c\xcf\x02\xae"
+			"\x6d\xc2\xeb\x76\xa1\x3b\xe2\x57"
+			"\x64\xaf\x38\x42\x67\x8e\x57\x3e"
+			"\xbd\xeb\x2e\xe0\x26\xeb\xfe\xb4"
+			"\x25\xcd\x36\x37\xc1\x81\xd1\x7f"
+			"\x05\xf0\x21\xef\x9c\xe9\x2d\x23"
+			"\x83\x00\x64\xd4\xad\x54\x6e\xe6"
+			"\x9d\xfd\xf1\xd6\xdf\xd9\x1b\x15"
+			"\xd7\x91\xba\x42\xca\xcb\xc5\xcf",
+		.rlen	= 16 + 32 + 16 + 16,
+		.authlen = 32,
+	},
+	/* Payload with payload len as zero leads to descriptor error.
+	 */
+#if 0
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkeysizeis_32bytes_enckeyis16_bytes",
+		.klen	= 8 + 32 + 16,
+		.iv	= "iv0123456789abcd",
+		.input	= "iv0123456789abcd",
+		.ilen	= 16,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x03\x00\x00",
+		.alen	= 13,
+		.result = "\x31\x41\x4e\xea\x70\xc2\xb3\xa7"
+			"\x3e\xcb\x1a\xee\xa9\xe1\xfc\xc4"
+			"\xfe\x63\xd4\x16\x45\x84\x36\x59"
+			"\xb5\x81\xd7\x84\x5e\xb6\xd0\x18"
+			"\x2c\x1b\x7a\x14\xc9\x3f\xe5\xc8"
+			"\x0d\xec\xab\xcc\xcd\x97\x62\xa0"
+			"\x26\xe8\x2b\xf9\x49\xdb\xf8\x55"
+			"\x24\x59\xdd\x40\x89\xba\xed\x22",
+		.rlen	= 32 + 16 + 16,
+		.authlen = 32,
+	},
+#endif
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkeysizeis_32bytes_enckeyis16_bytes",
+		.klen	= 8 + 32 + 16,
+		.iv	= "iv0123456789abcd",
+		.input	= "iv0123456789abcd"
+			"285 bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext285"
+			" bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext285"
+			" bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext285"
+			" bytes plaintext285 bytes plaintext",
+		.ilen	= 285 + 16,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x01\x01\x1d",
+		.alen	= 13,
+		.result = "\x4a\xd8\x67\x27\xec\x74\x48\x8e"
+			"\x5a\xca\xba\x13\x9c\xcf\x02\xae"
+			"\x79\x03\xd4\x14\x1c\x57\x86\x48"
+			"\xec\x5e\x59\x21\x41\xff\xb9\x2f"
+			"\x66\xe9\xc1\xc9\xe3\x01\x8c\x10"
+			"\xb6\xde\x8f\xb1\xc0\x66\x93\xc5"
+			"\xac\x10\xd6\x86\x35\x63\x2b\xc0"
+			"\x7a\x40\xfd\x0e\x39\x0a\xf5\x18"
+			"\x1a\xf7\x99\x3c\x45\xd8\xe4\x92"
+			"\xd3\x39\x83\x58\x04\x8f\xe0\x95"
+			"\x24\xee\x62\xc5\xdf\xf6\x4c\x25"
+			"\x22\x0e\xf7\xe3\x33\x04\x88\x5b"
+			"\x70\xf8\xf5\x39\x24\xa1\x58\xd2"
+			"\xf9\x4c\xf9\x64\x0a\xcf\x9f\x36"
+			"\x23\x43\xda\x44\xfc\x68\xd7\x23"
+			"\x83\xc2\xb7\xc6\xd7\x7f\xd2\xec"
+			"\xef\xd7\xfc\x6a\x64\xe9\x70\xdc"
+			"\x53\x98\xfa\xf2\x41\x24\x87\xbc"
+			"\x57\xc9\x1c\x38\xff\x4b\x95\x42"
+			"\xb5\x2c\xfe\xd2\x34\xe2\xa7\x28"
+			"\x61\x4a\x1d\xe0\x0f\x97\x62\x08"
+			"\xa6\xa9\x5c\x89\x5e\x42\x60\x71"
+			"\xda\xd9\xba\x95\x6f\x87\x9c\x00"
+			"\x7e\x0c\x7a\x6f\xb4\x99\x7e\x0e"
+			"\x6a\xe9\xab\x12\xda\x95\x25\x83"
+			"\x8f\xa2\xc2\x91\xb5\x3f\xae\xc3"
+			"\xf9\x03\xc9\x6d\xe7\xe7\x46\x61"
+			"\xdc\xbc\xf1\x17\xcc\x93\x33\xa5"
+			"\x06\x54\x45\x79\xcb\x1c\x67\x87"
+			"\x87\x35\x9b\xc3\xfd\x3c\xcc\x43"
+			"\xec\xac\xef\xfd\x3b\x35\xb3\xde"
+			"\x7d\x82\x57\x49\xc5\xe8\x47\xbe"
+			"\x70\xf2\xbf\x1c\x98\x1e\x3d\xa4"
+			"\x25\xa2\x65\x6c\xca\x04\x9a\x1d"
+			"\x01\x08\xa6\x36\xbe\x89\xd1\x4e"
+			"\x87\x7f\xae\x70\x79\x0d\x42\x2d"
+			"\xcc\x1b\x13\x34\xc5\x1d\xe7\x00"
+			"\x7f\x65\x72\xa3\x66\xe0\x55\x4f"
+			"\xf0\x81\x1a\xe0\x21\x4e\x00\xf4"
+			"\x53\x62\x37\x35\x70\x38\x82\x81"
+			"\x93\xac\x16\x00\x7a\xd8\xa1\x09"
+			"\xf6\x2a\x54\x51\x75\xf5\x22\xdb",
+		.rlen	= 285 + 32 + 3 + 16,
+		.authlen = 32,
+	}
+};
+
+static struct tls_testvec tls12_dec_tv_template[] = {
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkeysizeis_32bytes_enckeyis16_bytes",
+		.klen	= 8 + 32 + 16,
+		.iv	= "\x4a\xd8\x67\x27\xec\x74\x48\x8e"
+			"\x5a\xca\xba\x13\x9c\xcf\x02\xae",
+		.input	= "\x6d\xc2\xeb\x76\xa1\x3b\xe2\x57"
+			"\x64\xaf\x38\x42\x67\x8e\x57\x3e"
+			"\xbd\xeb\x2e\xe0\x26\xeb\xfe\xb4"
+			"\x25\xcd\x36\x37\xc1\x81\xd1\x7f"
+			"\x05\xf0\x21\xef\x9c\xe9\x2d\x23"
+			"\x83\x00\x64\xd4\xad\x54\x6e\xe6"
+			"\x9d\xfd\xf1\xd6\xdf\xd9\x1b\x15"
+			"\xd7\x91\xba\x42\xca\xcb\xc5\xcf",
+		.ilen	= 64,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x01\x00\x40",
+		.alen	= 13,
+		.result	= "Single block msg",
+		.rlen	= 16,
+		.authlen = 32,
+	},
+	/* Payload with payload len as zero leads to descriptor error.
+	 */
+#if 0
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkeysizeis_32bytes_enckeyis16_bytes",
+		.klen	= 8 + 32  + 16,
+		.iv	= "\x31\x41\x4e\xea\x70\xc2\xb3\xa7"
+			"\x3e\xcb\x1a\xee\xa9\xe1\xfc\xc4",
+		.input	= "\xfe\x63\xd4\x16\x45\x84\x36\x59"
+			"\xb5\x81\xd7\x84\x5e\xb6\xd0\x18"
+			"\x2c\x1b\x7a\x14\xc9\x3f\xe5\xc8"
+			"\x0d\xec\xab\xcc\xcd\x97\x62\xa0"
+			"\x26\xe8\x2b\xf9\x49\xdb\xf8\x55"
+			"\x24\x59\xdd\x40\x89\xba\xed\x22",
+		.ilen	= 32 + 16,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x03\x00\x30",
+		.alen	= 13,
+		.result	= "",
+		.rlen	= 0,
+		.authlen = 32,
+	},
+#endif
+	{
+#ifdef __LITTLE_ENDIAN
+		.key	= "\x08\x00"		/* rta length */
+			"\x01\x00"		/* rta type */
+#else
+		.key	= "\x00\x08"		/* rta length */
+			"\x00\x01"		/* rta type */
+#endif
+			"\x00\x00\x00\x10"	/* enc key length */
+			"authenticationkeysizeis_32bytes_enckeyis16_bytes",
+		.klen	= 8 + 32 + 16,
+		.iv = "\x4a\xd8\x67\x27\xec\x74\x48\x8e"
+			"\x5a\xca\xba\x13\x9c\xcf\x02\xae",
+		.input	= "\x79\x03\xd4\x14\x1c\x57\x86\x48"
+			"\xec\x5e\x59\x21\x41\xff\xb9\x2f"
+			"\x66\xe9\xc1\xc9\xe3\x01\x8c\x10"
+			"\xb6\xde\x8f\xb1\xc0\x66\x93\xc5"
+			"\xac\x10\xd6\x86\x35\x63\x2b\xc0"
+			"\x7a\x40\xfd\x0e\x39\x0a\xf5\x18"
+			"\x1a\xf7\x99\x3c\x45\xd8\xe4\x92"
+			"\xd3\x39\x83\x58\x04\x8f\xe0\x95"
+			"\x24\xee\x62\xc5\xdf\xf6\x4c\x25"
+			"\x22\x0e\xf7\xe3\x33\x04\x88\x5b"
+			"\x70\xf8\xf5\x39\x24\xa1\x58\xd2"
+			"\xf9\x4c\xf9\x64\x0a\xcf\x9f\x36"
+			"\x23\x43\xda\x44\xfc\x68\xd7\x23"
+			"\x83\xc2\xb7\xc6\xd7\x7f\xd2\xec"
+			"\xef\xd7\xfc\x6a\x64\xe9\x70\xdc"
+			"\x53\x98\xfa\xf2\x41\x24\x87\xbc"
+			"\x57\xc9\x1c\x38\xff\x4b\x95\x42"
+			"\xb5\x2c\xfe\xd2\x34\xe2\xa7\x28"
+			"\x61\x4a\x1d\xe0\x0f\x97\x62\x08"
+			"\xa6\xa9\x5c\x89\x5e\x42\x60\x71"
+			"\xda\xd9\xba\x95\x6f\x87\x9c\x00"
+			"\x7e\x0c\x7a\x6f\xb4\x99\x7e\x0e"
+			"\x6a\xe9\xab\x12\xda\x95\x25\x83"
+			"\x8f\xa2\xc2\x91\xb5\x3f\xae\xc3"
+			"\xf9\x03\xc9\x6d\xe7\xe7\x46\x61"
+			"\xdc\xbc\xf1\x17\xcc\x93\x33\xa5"
+			"\x06\x54\x45\x79\xcb\x1c\x67\x87"
+			"\x87\x35\x9b\xc3\xfd\x3c\xcc\x43"
+			"\xec\xac\xef\xfd\x3b\x35\xb3\xde"
+			"\x7d\x82\x57\x49\xc5\xe8\x47\xbe"
+			"\x70\xf2\xbf\x1c\x98\x1e\x3d\xa4"
+			"\x25\xa2\x65\x6c\xca\x04\x9a\x1d"
+			"\x01\x08\xa6\x36\xbe\x89\xd1\x4e"
+			"\x87\x7f\xae\x70\x79\x0d\x42\x2d"
+			"\xcc\x1b\x13\x34\xc5\x1d\xe7\x00"
+			"\x7f\x65\x72\xa3\x66\xe0\x55\x4f"
+			"\xf0\x81\x1a\xe0\x21\x4e\x00\xf4"
+			"\x53\x62\x37\x35\x70\x38\x82\x81"
+			"\x93\xac\x16\x00\x7a\xd8\xa1\x09"
+			"\xf6\x2a\x54\x51\x75\xf5\x22\xdb",
+		.ilen	= 320,
+		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
+			"\x00\x03\x01\x01\x40",
+		.alen	= 13,
+		.result = "285 bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext285"
+			" bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext285"
+			" bytes plaintext285 bytes plaintext285 bytes"
+			" plaintext285 bytes plaintext285 bytes plaintext285"
+			" bytes plaintext285 bytes plaintext",
+		.rlen	= 285,
+		.authlen = 32,
+	}
+};
 
 /*
  * RSA test vectors. Borrowed from openSSL.
@@ -32581,223 +33126,6 @@ static const struct hash_testvec blake2b_512_tv_template[] = {{
 			  0x28, 0xe4, 0xc7, 0xa1, 0xcf, 0x6b, 0x17, 0x4e,
 			  0xf1, 0x5b, 0xb5, 0x53, 0xd4, 0xa7, 0xd0, 0x5b,
 			  0xae, 0x15, 0x81, 0x15, 0xd0, 0x88, 0xa0, 0x3c, },
-}};
-
-static const struct hash_testvec blakes2s_128_tv_template[] = {{
-	.digest = (u8[]){ 0x64, 0x55, 0x0d, 0x6f, 0xfe, 0x2c, 0x0a, 0x01,
-			  0xa1, 0x4a, 0xba, 0x1e, 0xad, 0xe0, 0x20, 0x0c, },
-}, {
-	.plaintext = blake2_ordered_sequence,
-	.psize = 64,
-	.digest = (u8[]){ 0xdc, 0x66, 0xca, 0x8f, 0x03, 0x86, 0x58, 0x01,
-			  0xb0, 0xff, 0xe0, 0x6e, 0xd8, 0xa1, 0xa9, 0x0e, },
-}, {
-	.ksize = 16,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 1,
-	.digest = (u8[]){ 0x88, 0x1e, 0x42, 0xe7, 0xbb, 0x35, 0x80, 0x82,
-			  0x63, 0x7c, 0x0a, 0x0f, 0xd7, 0xec, 0x6c, 0x2f, },
-}, {
-	.ksize = 32,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 7,
-	.digest = (u8[]){ 0xcf, 0x9e, 0x07, 0x2a, 0xd5, 0x22, 0xf2, 0xcd,
-			  0xa2, 0xd8, 0x25, 0x21, 0x80, 0x86, 0x73, 0x1c, },
-}, {
-	.ksize = 1,
-	.key = "B",
-	.plaintext = blake2_ordered_sequence,
-	.psize = 15,
-	.digest = (u8[]){ 0xf6, 0x33, 0x5a, 0x2c, 0x22, 0xa0, 0x64, 0xb2,
-			  0xb6, 0x3f, 0xeb, 0xbc, 0xd1, 0xc3, 0xe5, 0xb2, },
-}, {
-	.ksize = 16,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 247,
-	.digest = (u8[]){ 0x72, 0x66, 0x49, 0x60, 0xf9, 0x4a, 0xea, 0xbe,
-			  0x1f, 0xf4, 0x60, 0xce, 0xb7, 0x81, 0xcb, 0x09, },
-}, {
-	.ksize = 32,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 256,
-	.digest = (u8[]){ 0xd5, 0xa4, 0x0e, 0xc3, 0x16, 0xc7, 0x51, 0xa6,
-			  0x3c, 0xd0, 0xd9, 0x11, 0x57, 0xfa, 0x1e, 0xbb, },
-}};
-
-static const struct hash_testvec blakes2s_160_tv_template[] = {{
-	.plaintext = blake2_ordered_sequence,
-	.psize = 7,
-	.digest = (u8[]){ 0xb4, 0xf2, 0x03, 0x49, 0x37, 0xed, 0xb1, 0x3e,
-			  0x5b, 0x2a, 0xca, 0x64, 0x82, 0x74, 0xf6, 0x62,
-			  0xe3, 0xf2, 0x84, 0xff, },
-}, {
-	.plaintext = blake2_ordered_sequence,
-	.psize = 256,
-	.digest = (u8[]){ 0xaa, 0x56, 0x9b, 0xdc, 0x98, 0x17, 0x75, 0xf2,
-			  0xb3, 0x68, 0x83, 0xb7, 0x9b, 0x8d, 0x48, 0xb1,
-			  0x9b, 0x2d, 0x35, 0x05, },
-}, {
-	.ksize = 1,
-	.key = "B",
-	.digest = (u8[]){ 0x50, 0x16, 0xe7, 0x0c, 0x01, 0xd0, 0xd3, 0xc3,
-			  0xf4, 0x3e, 0xb1, 0x6e, 0x97, 0xa9, 0x4e, 0xd1,
-			  0x79, 0x65, 0x32, 0x93, },
-}, {
-	.ksize = 32,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 1,
-	.digest = (u8[]){ 0x1c, 0x2b, 0xcd, 0x9a, 0x68, 0xca, 0x8c, 0x71,
-			  0x90, 0x29, 0x6c, 0x54, 0xfa, 0x56, 0x4a, 0xef,
-			  0xa2, 0x3a, 0x56, 0x9c, },
-}, {
-	.ksize = 16,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 15,
-	.digest = (u8[]){ 0x36, 0xc3, 0x5f, 0x9a, 0xdc, 0x7e, 0xbf, 0x19,
-			  0x68, 0xaa, 0xca, 0xd8, 0x81, 0xbf, 0x09, 0x34,
-			  0x83, 0x39, 0x0f, 0x30, },
-}, {
-	.ksize = 1,
-	.key = "B",
-	.plaintext = blake2_ordered_sequence,
-	.psize = 64,
-	.digest = (u8[]){ 0x86, 0x80, 0x78, 0xa4, 0x14, 0xec, 0x03, 0xe5,
-			  0xb6, 0x9a, 0x52, 0x0e, 0x42, 0xee, 0x39, 0x9d,
-			  0xac, 0xa6, 0x81, 0x63, },
-}, {
-	.ksize = 32,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 247,
-	.digest = (u8[]){ 0x2d, 0xd8, 0xd2, 0x53, 0x66, 0xfa, 0xa9, 0x01,
-			  0x1c, 0x9c, 0xaf, 0xa3, 0xe2, 0x9d, 0x9b, 0x10,
-			  0x0a, 0xf6, 0x73, 0xe8, },
-}};
-
-static const struct hash_testvec blakes2s_224_tv_template[] = {{
-	.plaintext = blake2_ordered_sequence,
-	.psize = 1,
-	.digest = (u8[]){ 0x61, 0xb9, 0x4e, 0xc9, 0x46, 0x22, 0xa3, 0x91,
-			  0xd2, 0xae, 0x42, 0xe6, 0x45, 0x6c, 0x90, 0x12,
-			  0xd5, 0x80, 0x07, 0x97, 0xb8, 0x86, 0x5a, 0xfc,
-			  0x48, 0x21, 0x97, 0xbb, },
-}, {
-	.plaintext = blake2_ordered_sequence,
-	.psize = 247,
-	.digest = (u8[]){ 0x9e, 0xda, 0xc7, 0x20, 0x2c, 0xd8, 0x48, 0x2e,
-			  0x31, 0x94, 0xab, 0x46, 0x6d, 0x94, 0xd8, 0xb4,
-			  0x69, 0xcd, 0xae, 0x19, 0x6d, 0x9e, 0x41, 0xcc,
-			  0x2b, 0xa4, 0xd5, 0xf6, },
-}, {
-	.ksize = 16,
-	.key = blake2_ordered_sequence,
-	.digest = (u8[]){ 0x32, 0xc0, 0xac, 0xf4, 0x3b, 0xd3, 0x07, 0x9f,
-			  0xbe, 0xfb, 0xfa, 0x4d, 0x6b, 0x4e, 0x56, 0xb3,
-			  0xaa, 0xd3, 0x27, 0xf6, 0x14, 0xbf, 0xb9, 0x32,
-			  0xa7, 0x19, 0xfc, 0xb8, },
-}, {
-	.ksize = 1,
-	.key = "B",
-	.plaintext = blake2_ordered_sequence,
-	.psize = 7,
-	.digest = (u8[]){ 0x73, 0xad, 0x5e, 0x6d, 0xb9, 0x02, 0x8e, 0x76,
-			  0xf2, 0x66, 0x42, 0x4b, 0x4c, 0xfa, 0x1f, 0xe6,
-			  0x2e, 0x56, 0x40, 0xe5, 0xa2, 0xb0, 0x3c, 0xe8,
-			  0x7b, 0x45, 0xfe, 0x05, },
-}, {
-	.ksize = 32,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 15,
-	.digest = (u8[]){ 0x16, 0x60, 0xfb, 0x92, 0x54, 0xb3, 0x6e, 0x36,
-			  0x81, 0xf4, 0x16, 0x41, 0xc3, 0x3d, 0xd3, 0x43,
-			  0x84, 0xed, 0x10, 0x6f, 0x65, 0x80, 0x7a, 0x3e,
-			  0x25, 0xab, 0xc5, 0x02, },
-}, {
-	.ksize = 16,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 64,
-	.digest = (u8[]){ 0xca, 0xaa, 0x39, 0x67, 0x9c, 0xf7, 0x6b, 0xc7,
-			  0xb6, 0x82, 0xca, 0x0e, 0x65, 0x36, 0x5b, 0x7c,
-			  0x24, 0x00, 0xfa, 0x5f, 0xda, 0x06, 0x91, 0x93,
-			  0x6a, 0x31, 0x83, 0xb5, },
-}, {
-	.ksize = 1,
-	.key = "B",
-	.plaintext = blake2_ordered_sequence,
-	.psize = 256,
-	.digest = (u8[]){ 0x90, 0x02, 0x26, 0xb5, 0x06, 0x9c, 0x36, 0x86,
-			  0x94, 0x91, 0x90, 0x1e, 0x7d, 0x2a, 0x71, 0xb2,
-			  0x48, 0xb5, 0xe8, 0x16, 0xfd, 0x64, 0x33, 0x45,
-			  0xb3, 0xd7, 0xec, 0xcc, },
-}};
-
-static const struct hash_testvec blakes2s_256_tv_template[] = {{
-	.plaintext = blake2_ordered_sequence,
-	.psize = 15,
-	.digest = (u8[]){ 0xd9, 0x7c, 0x82, 0x8d, 0x81, 0x82, 0xa7, 0x21,
-			  0x80, 0xa0, 0x6a, 0x78, 0x26, 0x83, 0x30, 0x67,
-			  0x3f, 0x7c, 0x4e, 0x06, 0x35, 0x94, 0x7c, 0x04,
-			  0xc0, 0x23, 0x23, 0xfd, 0x45, 0xc0, 0xa5, 0x2d, },
-}, {
-	.ksize = 32,
-	.key = blake2_ordered_sequence,
-	.digest = (u8[]){ 0x48, 0xa8, 0x99, 0x7d, 0xa4, 0x07, 0x87, 0x6b,
-			  0x3d, 0x79, 0xc0, 0xd9, 0x23, 0x25, 0xad, 0x3b,
-			  0x89, 0xcb, 0xb7, 0x54, 0xd8, 0x6a, 0xb7, 0x1a,
-			  0xee, 0x04, 0x7a, 0xd3, 0x45, 0xfd, 0x2c, 0x49, },
-}, {
-	.ksize = 1,
-	.key = "B",
-	.plaintext = blake2_ordered_sequence,
-	.psize = 1,
-	.digest = (u8[]){ 0x22, 0x27, 0xae, 0xaa, 0x6e, 0x81, 0x56, 0x03,
-			  0xa7, 0xe3, 0xa1, 0x18, 0xa5, 0x9a, 0x2c, 0x18,
-			  0xf4, 0x63, 0xbc, 0x16, 0x70, 0xf1, 0xe7, 0x4b,
-			  0x00, 0x6d, 0x66, 0x16, 0xae, 0x9e, 0x74, 0x4e, },
-}, {
-	.ksize = 16,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 7,
-	.digest = (u8[]){ 0x58, 0x5d, 0xa8, 0x60, 0x1c, 0xa4, 0xd8, 0x03,
-			  0x86, 0x86, 0x84, 0x64, 0xd7, 0xa0, 0x8e, 0x15,
-			  0x2f, 0x05, 0xa2, 0x1b, 0xbc, 0xef, 0x7a, 0x34,
-			  0xb3, 0xc5, 0xbc, 0x4b, 0xf0, 0x32, 0xeb, 0x12, },
-}, {
-	.ksize = 32,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 64,
-	.digest = (u8[]){ 0x89, 0x75, 0xb0, 0x57, 0x7f, 0xd3, 0x55, 0x66,
-			  0xd7, 0x50, 0xb3, 0x62, 0xb0, 0x89, 0x7a, 0x26,
-			  0xc3, 0x99, 0x13, 0x6d, 0xf0, 0x7b, 0xab, 0xab,
-			  0xbd, 0xe6, 0x20, 0x3f, 0xf2, 0x95, 0x4e, 0xd4, },
-}, {
-	.ksize = 1,
-	.key = "B",
-	.plaintext = blake2_ordered_sequence,
-	.psize = 247,
-	.digest = (u8[]){ 0x2e, 0x74, 0x1c, 0x1d, 0x03, 0xf4, 0x9d, 0x84,
-			  0x6f, 0xfc, 0x86, 0x32, 0x92, 0x49, 0x7e, 0x66,
-			  0xd7, 0xc3, 0x10, 0x88, 0xfe, 0x28, 0xb3, 0xe0,
-			  0xbf, 0x50, 0x75, 0xad, 0x8e, 0xa4, 0xe6, 0xb2, },
-}, {
-	.ksize = 16,
-	.key = blake2_ordered_sequence,
-	.plaintext = blake2_ordered_sequence,
-	.psize = 256,
-	.digest = (u8[]){ 0xb9, 0xd2, 0x81, 0x0e, 0x3a, 0xb1, 0x62, 0x9b,
-			  0xad, 0x44, 0x05, 0xf4, 0x92, 0x2e, 0x99, 0xc1,
-			  0x4a, 0x47, 0xbb, 0x5b, 0x6f, 0xb2, 0x96, 0xed,
-			  0xd5, 0x06, 0xb5, 0x3a, 0x7c, 0x7a, 0x65, 0x1d, },
 }};
 
 #endif	/* _CRYPTO_TESTMGR_H */

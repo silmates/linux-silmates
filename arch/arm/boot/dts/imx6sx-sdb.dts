@@ -103,12 +103,29 @@
 	};
 };
 
+&cpu0 {
+	operating-points = <
+		/* kHz    uV */
+		996000  1250000
+		792000  1175000
+		396000  1175000
+	>;
+	fsl,soc-operating-points = <
+		/* ARM kHz      SOC uV */
+		996000  1250000
+		792000  1175000
+		396000  1175000
+	>;
+
+	fsl,arm-soc-shared = <1>;
+};
+
 &qspi2 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_qspi2>;
 	status = "okay";
 
-	flash0: n25q256a@0 {
+	flash0: flash@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		compatible = "micron,n25q256a", "jedec,spi-nor";
@@ -118,7 +135,7 @@
 		reg = <0>;
 	};
 
-	flash1: n25q256a@2 {
+	flash1: flash@2 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		compatible = "micron,n25q256a", "jedec,spi-nor";
@@ -131,10 +148,12 @@
 
 &reg_arm {
 	vin-supply = <&sw1a_reg>;
+	regulator-allow-bypass;
 };
 
 &reg_soc {
 	vin-supply = <&sw1a_reg>;
+	regulator-allow-bypass;
 };
 
 &reg_vdd1p1 {

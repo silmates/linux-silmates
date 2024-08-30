@@ -164,6 +164,12 @@ properties:
       req_gpr is the gpr register offset for ENET stop request.
       req_bit is the gpr bit offset for ENET stop request.
 
+  mii-exclusive:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description:
+      If present, each MAC has their exclusive MDIO bus in current board
+      design, otherwise multiple MACs share one MDIO bus to reduce Pins utilize.
+
   mdio:
     type: object
     description:
