@@ -28,14 +28,39 @@
 	};
 
 
+	regulators {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		reg_system_3v3: regulator-system-3v3 {
+			compatible = "regulator-fixed";
+			enable-active-high;
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+			regulator-boot-on;
+			regulator-always-on;
+			regulator-name = "+3.3 SYSTEM";
+		};
+
+		reg_system_5v: regulator-system-5v {
+			compatible = "regulator-fixed";
+			enable-active-high;
+			regulator-min-microvolt = <5000000>;
+			regulator-max-microvolt = <5000000>;
+			regulator-boot-on;
+			regulator-always-on;
+			regulator-name = "+5 SYSTEM";
+		};
+	};
+	
 	backlight: backlight {
 		compatible = "pwm-backlight";
-		brightness-levels = <0 45 63 88 119 158 203 255>;
-		default-brightness-level = <4>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_backlight>;
-		power-supply = <&reg_3p3v>;
-		pwms = <&pwm1 0 6666667 PWM_POLARITY_INVERTED>;
+		brightness-levels = <0 255>;
+		num-interpolated-steps = <255>;
+		default-brightness-level = <127>;
+		power-supply = <&reg_system_3v3>;
+		pwms = <&pwm1 0 50000>;
 		status = "disabled";
 	};
 };
@@ -304,6 +329,8 @@
 };
 
 &pwm1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_backlight>;
 	status = "okay";
 };
 
