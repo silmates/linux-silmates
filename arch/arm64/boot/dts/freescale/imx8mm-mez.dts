@@ -335,7 +335,7 @@
 		reg = <0x1a>;
 		// Allow configuring the two loudspeaker outputs as a
 		// single Bridge Tied Load output getting higher output power.
-/*		nuvoton,spk-btl;*/
+		nuvoton,spk-btl;
 		#sound-dai-cells = <0>;
 	};
 
@@ -508,8 +508,8 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_sai2>;
 	assigned-clocks = <&clk IMX8MM_CLK_SAI2>;
-	assigned-clock-parents = <&clk IMX8MM_AUDIO_PLL2_OUT>;
-	assigned-clock-rates = <11289600>;
+	assigned-clock-parents = <&clk IMX8MM_AUDIO_PLL1_OUT>;
+	assigned-clock-rates = <24576000>;
 	fsl,sai-mclk-direction-output;
 	status = "okay";
 };
