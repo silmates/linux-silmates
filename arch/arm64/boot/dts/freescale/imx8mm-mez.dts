@@ -17,11 +17,11 @@
 		stdout-path = &uart4;
 	};
 		
-	aliases {
+/*	aliases {
 		rtc0 = &pcf85263a_rtc;
 		rtc1 = &snvs_rtc;
 	};
-
+*/
 	gpio-leds {
 		compatible = "gpio-leds";
 		pinctrl-names = "default";
@@ -105,6 +105,8 @@
 			sound-dai = <&sai2>;
 		};
 	};
+	
+
 };
 
 
@@ -121,6 +123,7 @@
 
 		pinctrl_mipi_en: mipi_en_grp {
 			fsl,pins = <
+				MX8MM_IOMUXC_SAI5_RXD0_GPIO3_IO21		0x19
 			>;
 		};
 		
@@ -292,7 +295,7 @@
 		compatible = "st,24c256", "atmel,24c256";
 		pagesize = <64>;
 		reg = <0x53>;
-        size = <32768>;
+        	size = <32768>;
 		status = "okay";
     };
     
@@ -303,11 +306,11 @@
 		quartz-drive-strength = <PCF85263_QUARTZDRIVE_LOW>;*/
 	};
 
-    temp_sensor: tmp102@48 {
-        compatible = "ti,tmp102";
-        reg = <0x48>;
-        #thermal-sensor-cells = <1>;
-    };
+	temp_sensor: tmp102@48 {
+		compatible = "ti,tmp102";
+		reg = <0x48>;
+		#thermal-sensor-cells = <1>;
+	};
 
 	/* Audio Codec */
 	nau8822_1a: codec@1a {
@@ -388,92 +391,55 @@
 };
 
 &i2c3 {
-    goodix_ts: gt928@5d {
-			pinctrl-names = "default";
-			pinctrl-0 = <&pinctrl_touchscreen>;
-            compatible = "goodix,gt928";
-            reg = <0x5d>;
-            interrupt-parent = <&gpio4>;
-            interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
-			irq-gpios = <&gpio4 0 GPIO_ACTIVE_HIGH>;
-            reset-gpios = <&gpio4 1 GPIO_ACTIVE_HIGH>;
-            touchscreen-size-x = <1280>;
-            touchscreen-size-y = <800>;
-            status = "okay";
-    };
+	goodix_ts: gt928@5d {
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_touchscreen>;
+		compatible = "goodix,gt928";
+		reg = <0x5d>;
+		interrupt-parent = <&gpio4>;
+		interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+		irq-gpios = <&gpio4 0 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio4 1 GPIO_ACTIVE_HIGH>;
+		touchscreen-inverted-y = <1>;
+		status = "okay";
+	};
+};
+
+&pwm1 {
+	status = "okay";
 };
 
 &backlight {
-    status = "okay";
+	status = "okay";
 };
 
 &lcdif {
-	status = "disabled";
+	status = "okay";
+};
+
+&gpu {
+	status = "okay";
 };
 
 &mipi_dsi {
-	status = "disabled";
+	status = "okay";
 
 	panel@0 {
-        #address-cells = <1>;
-        #size-cells = <0>;
-/*        compatible = "raydium,rm67199";*/
-        compatible = "panel-dpi";
-        reg = <0>;
-
-        power-supply = <&reg_system_3v3>;	
-		backlight = <&backlight>;
-
+		compatible = "boe,ts101wxu-nwo";
+		reg = <0>;
 		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_mipi_extra>;
-/*		pinctrl-0 = <&pinctrl_mipi_en>;*/
-
-/*		enable-gpios = <&gpio3 20 GPIO_ACTIVE_HIGH>; */
-
-		reset-gpios = <&gpio3 21 GPIO_ACTIVE_LOW>;
-
-		status = "okay";
+		pinctrl-0 = <&pinctrl_mipi_en>;
+		backlight = <&backlight>;
+		reset-gpio = <&gpio3 21 GPIO_ACTIVE_LOW>;
 		dsi-lanes = <4>;
+		video-mode = <2>;	/* 0: burst mode
+					 * 1: non-burst mode with sync event
+					 * 2: non-burst mode with sync pulse
+					 */
+		panel-width-mm = <135>;
+		panel-height-mm = <216>;
+		status = "okay";
 
-		/* 0: burst mode
-		*  1: non-burst mode with sync event
-		*  2: non-burst mode with sync pulse
-		*/
-		video-mode = <2>; 
-
-		width-mm = <135>;
-		height-mm = <216>;
-
-        panel-timing {
-            clock-frequency = <9200000>;
-            hactive = <800>;
-            vactive = <1280>;
-            hfront-porch = <60>;
-            hback-porch = <60>;
-            hsync-len = <16>;
-            vback-porch = <10>;
-            vfront-porch = <10>;
-            vsync-len = <4>;
-
-            hsync-active = <0>;
-            vsync-active = <0>;
-            de-active = <1>;
-            pixelclk-active = <1>;
-        };
-        
-		port@0 {
-			reg = <0>;
-        	panel1_in: endpoint {
-				remote-endpoint = <&mipi_dsi_panel1_out>;
-			};
-		};
-	};
-	
-	port@1 {
-		reg = <1>;
-		mipi_dsi_panel1_out: endpoint {
-			remote-endpoint = <&panel1_in>;
-		};
 	};
 };
 
@@ -517,9 +483,9 @@
 };
 
 &usbotg2 {
-    hnp-disable;
-    srp-disable;
-    adp-disable;
+	hnp-disable;
+	srp-disable;
+	adp-disable;
 /*
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_usbotg2>;

@@ -27,7 +27,6 @@
 		/delete-node/ linux,cma;
 	};
 
-
 	regulators {
 		compatible = "simple-bus";
 		#address-cells = <1>;
@@ -53,9 +52,11 @@
 			regulator-name = "+5 SYSTEM";
 		};
 	};
-	
+
 	backlight: backlight {
 		compatible = "pwm-backlight";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_backlight>;
 		brightness-levels = <0 255>;
 		num-interpolated-steps = <255>;
 		default-brightness-level = <127>;
@@ -63,6 +64,7 @@
 		pwms = <&pwm1 0 50000>;
 		status = "disabled";
 	};
+
 };
 
 &iomuxc {
@@ -329,8 +331,6 @@
 };
 
 &pwm1 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_backlight>;
 	status = "okay";
 };
 
@@ -397,6 +397,10 @@
 
 &cpu_crit0 {
 	temperature = <105000>;
+};
+
+&lcdif {
+	status = "okay";
 };
 
 &gpu {
