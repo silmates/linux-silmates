@@ -478,23 +478,6 @@ static const struct ili9881c_instr nt156whm_n44_init[] = {
 
 };
 
-
-static const struct drm_display_mode lhr050h41_high_clk_mode = {
-	.clock		= 74250,
-	.hdisplay	= 720,
-	.hsync_start	= 720 + 34,
-	.hsync_end	= 720 + 34 + 100,
-	.htotal	= 720 + 34 + 100 + 100,
-	.vdisplay	= 1280,
-	.vsync_start	= 1280 + 2,
-	.vsync_end	= 1280 + 2 + 30,
-	.vtotal	= 1280 + 2 + 30 + 20,
-	.width_mm 	= 62,
-	.height_mm 	= 110,
-	.flags = DRM_MODE_FLAG_NHSYNC |
-		 DRM_MODE_FLAG_NVSYNC,
-};
-
 static const struct drm_display_mode lhr050h41_default_mode = {
 	.clock		= 62000,
 	.hdisplay	= 720,
@@ -507,22 +490,6 @@ static const struct drm_display_mode lhr050h41_default_mode = {
 	.vtotal		= 1280 + 10 + 10 + 20,
 	.width_mm 	= 62,
 	.height_mm 	= 110,
-	.flags = DRM_MODE_FLAG_NHSYNC |
-		 DRM_MODE_FLAG_NVSYNC,
-};
-
-static const struct drm_display_mode ts101wxu_nwo_high_clk_mode = {
-	.clock		= 74250,
-	.hdisplay	= 800,
-	.hsync_start	= 800 + 60,
-	.hsync_end	= 800 + 60 + 16,
-	.htotal		= 800 + 60 + 16 + 10,
-	.vdisplay	= 1280,
-	.vsync_start	= 1280 + 10,
-	.vsync_end	= 1280 + 10 + 4,
-	.vtotal		= 1280 + 10 + 4 + 10,
-	.width_mm 	= 135,
-	.height_mm 	= 216,
 	.flags = DRM_MODE_FLAG_NHSYNC |
 		 DRM_MODE_FLAG_NVSYNC,
 };
@@ -555,22 +522,6 @@ EDID
 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 02
 00 11 3F EA 0B 3C 6E 0D 0E 19 6E 00 00 00 00 86
 */
-
-static const struct drm_display_mode nt156whm_n44_high_clk_mode = {
-	.clock = 76300,
-	.hdisplay = 1366,
-	.hsync_start = 1366 + 48,
-	.hsync_end = 1366 + 48 + 32,
-	.htotal = 1366 + 48 + 32 + 146,
-	.vdisplay = 768,
-	.vsync_start = 768 + 3,
-	.vsync_end = 768 + 3 + 6,
-	.vtotal = 768 + 3 + 6 + 51,
-	.width_mm = 344,
-	.height_mm = 194,
-	.flags = DRM_MODE_FLAG_NHSYNC |
-		 DRM_MODE_FLAG_NVSYNC,
-};
 
 static const struct drm_display_mode nt156whm_n44_default_mode = {
 	.clock = 76300,
@@ -669,6 +620,7 @@ static int ili9881c_enable(struct drm_panel *panel)
 	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
 	if(ctx->desc->id == PANEL_NT156WHM_N44) {
+		msleep(120);
 		ctx->enabled = true;
 		return 0;
 	}
