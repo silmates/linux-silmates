@@ -64,6 +64,13 @@
 			post-power-on-delay-ms = <120>;
 			status = "okay";
 		};
+
+		uart2_pwrseq: uart2_pwrseq {
+			compatible = "gpio-reset";
+			reset-gpios = <&gpio2 6 GPIO_ACTIVE_LOW>;  /* BT REG ON */
+			reset-delay-us = <1000>;
+			#reset-cells = <0>;
+		};
 	};
 
 	sound_card: sound-card {
@@ -172,6 +179,13 @@
 				MX8MM_IOMUXC_SD1_DATA7_GPIO2_IO9		0x159
 			>;
 		};
+		
+		pinctrl_bt: btgrp {
+			fsl,pins = <
+				MX8MM_IOMUXC_SD1_DATA4_GPIO2_IO6		0x159
+			>;
+		};
+
 
 		pinctrl_usdhc1_gpio: usdhc1grpgpio {
 			fsl,pins = <
@@ -406,7 +420,8 @@
 
 &uart2 { /* Bluetooth UART */
 	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_uart2>;
+	pinctrl-0 = <&pinctrl_uart2>,<&pinctrl_bt>;
+	resets = <&uart2_pwrseq>;
 	assigned-clocks = <&clk IMX8MM_CLK_UART2>;
 	assigned-clock-parents = <&clk IMX8MM_SYS_PLL1_80M>;
 	fsl,uart-has-rtscts;

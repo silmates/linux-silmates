@@ -1437,6 +1437,10 @@ static int imx_uart_startup(struct uart_port *port)
 	/* Can we enable the DMA support? */
 	if (!uart_console(port) && imx_uart_dma_init(sport) == 0)
 		dma_is_inited = 1;
+/*  // Disable DMA support as the Kernel crashes when we make HCI_UART as module
+ 	if (!uart_console(port) && imx_uart_dma_init(sport) == 0)
+ 		dma_is_inited = 1;
+*/
 
 	spin_lock_irqsave(&sport->port.lock, flags);
 	/* Reset fifo's and state machines */
