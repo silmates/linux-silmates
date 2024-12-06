@@ -34,10 +34,13 @@ struct ili9881c_desc {
 	const size_t init_length;
 	const struct drm_display_mode *mode;
 	const int id;
+	u8 default_address_mode;
 };
 
 struct ili9881c {
 	struct drm_panel	panel;
+	enum drm_panel_orientation	orientation;
+	u8 address_mode;
 	struct mipi_dsi_device	*dsi;
 	const struct ili9881c_desc	*desc;
 
@@ -46,6 +49,7 @@ struct ili9881c {
 	u32	timing_mode;
 	bool prepared;
 	bool enabled;
+	u32 rotation;
 };
 
 enum ili9881c_op {
@@ -524,7 +528,7 @@ EDID
 */
 
 static const struct drm_display_mode nt156whm_n44_default_mode = {
-	.clock = 76300,
+	.clock = 76500,
 	.hdisplay = 1366,
 	.hsync_start = 1366 + 48,
 	.hsync_end = 1366 + 48 + 32,
@@ -642,6 +646,14 @@ static int ili9881c_enable(struct drm_panel *panel)
 	if (ret)
 		return ret;
 
+	if (ctx->address_mode) {
+		ret = mipi_dsi_dcs_write(ctx->dsi, MIPI_DCS_SET_ADDRESS_MODE,
+					 &ctx->address_mode,
+					 sizeof(ctx->address_mode));
+		if (ret < 0)
+			return ret;
+	}
+
 	ret = mipi_dsi_dcs_set_tear_on(ctx->dsi, MIPI_DSI_DCS_TEAR_MODE_VBLANK);
 	if (ret)
 		return ret;
@@ -747,16 +759,34 @@ static int ili9881c_get_modes(struct drm_panel *panel, struct drm_connector *con
 	connector->display_info.width_mm = mode->width_mm;
 	connector->display_info.height_mm = mode->height_mm;
 
+	/*
+	 * TODO: Remove once all drm drivers call
+	 * drm_connector_set_orientation_from_panel()
+	 */
+	drm_connector_set_panel_orientation(connector, ctx->orientation);
+
 	return 1;
 }
 
+/*
+static enum drm_panel_orientation ili9881c_get_orientation(struct drm_panel *panel)
+{
+	struct ili9881c *ctx = panel_to_ili9881c(panel);
+
+	return ctx->orientation;
+}
+*/
 static const struct drm_panel_funcs ili9881c_funcs = {
 	.prepare	= ili9881c_prepare,
 	.unprepare	= ili9881c_unprepare,
 	.enable		= ili9881c_enable,
 	.disable	= ili9881c_disable,
 	.get_modes	= ili9881c_get_modes,
+/*	.get_orientation = ili9881c_get_orientation,*/
 };
+#define ILI9881C_MADCTL_MV	BIT(5)
+#define ILI9881C_MADCTL_MX	BIT(6)
+#define ILI9881C_MADCTL_MY	BIT(7)
 
 static int ili9881c_dsi_probe(struct mipi_dsi_device *dsi)
 {
@@ -765,6 +795,7 @@ static int ili9881c_dsi_probe(struct mipi_dsi_device *dsi)
 	struct ili9881c *ctx;
 	int ret;
 	u32 video_mode;
+	u8 addr_mode=0;
 
 	ctx = devm_kzalloc(&dsi->dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
@@ -787,6 +818,51 @@ static int ili9881c_dsi_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(ctx->reset)) {
 		dev_err(&dsi->dev, "Couldn't get our reset GPIO\n");
 	}
+
+	ret = of_drm_get_panel_orientation(dsi->dev.of_node, &ctx->orientation);
+	if (ret) {
+		dev_err(&dsi->dev, "%pOF: failed to get orientation: %d\n",
+			dsi->dev.of_node, ret);
+		return ret;
+	}
+//	ctx->address_mode = ctx->desc->default_address_mode;
+//	ctx->orientation = DRM_MODE_PANEL_ORIENTATION_NORMAL;
+//	ctx->address_mode ^= 0x03;
+/*
+	ret = of_property_read_u32(np, "rotation", &ctx->rotation);
+	dev_err(&dsi->dev, "Rotation - %d \n",ctx->rotation);
+	if (!ret) {
+		switch (ctx->rotation) {
+		default:
+			addr_mode = ILI9881C_MADCTL_MX;
+			break;
+		case 90:
+			addr_mode = ILI9881C_MADCTL_MV;
+			break;
+		case 180:
+			addr_mode = ILI9881C_MADCTL_MY;
+			break;
+		case 270:
+			addr_mode = ILI9881C_MADCTL_MV | ILI9881C_MADCTL_MY |
+				    ILI9881C_MADCTL_MX;
+			break;
+		}
+	}
+	dev_err(&dsi->dev, "addr_mode - 0x%02x \n",addr_mode);
+	ctx->address_mode |= addr_mode;
+	dev_err(&dsi->dev, "ctx->address_mode - 0x%02x \n",ctx->address_mode);
+*/
+/*	if (ctx->orientation == DRM_MODE_PANEL_ORIENTATION_BOTTOM_UP) {
+		ctx->address_mode ^= 0x03;
+	}
+
+	else if (ctx->orientation == DRM_MODE_PANEL_ORIENTATION_RIGHT_UP) {
+		ctx->address_mode ^= 0x03;
+	}
+	else if (ctx->orientation == DRM_MODE_PANEL_ORIENTATION_LEFT_UP) {
+		ctx->address_mode ^= 0x03;
+	}
+*/
 
 	ret = drm_panel_of_backlight(&ctx->panel);
 	if (ret)
@@ -842,6 +918,7 @@ static const struct ili9881c_desc lhr050h41_desc = {
 	.init_length = ARRAY_SIZE(lhr050h41_init),
 	.mode = &lhr050h41_default_mode,
 	.id = PANEL_LHR050H41,
+	.default_address_mode = 0x00,
 };
 
 static const struct ili9881c_desc ts101wxu_nwo_desc = {
@@ -849,6 +926,7 @@ static const struct ili9881c_desc ts101wxu_nwo_desc = {
 	.init_length = ARRAY_SIZE(ts101wxu_nwo_init),
 	.mode = &ts101wxu_nwo_default_mode,
 	.id = PANEL_TS101WXU_NWO,
+	.default_address_mode = 0x03,
 };
 
 static const struct ili9881c_desc nt156whm_n44_desc = {
@@ -856,6 +934,7 @@ static const struct ili9881c_desc nt156whm_n44_desc = {
 	.init_length = ARRAY_SIZE(nt156whm_n44_init),
 	.mode = &nt156whm_n44_default_mode,
 	.id = PANEL_NT156WHM_N44,
+	.default_address_mode = 0x00,
 };
 
 static const struct of_device_id ili9881c_of_match[] = {

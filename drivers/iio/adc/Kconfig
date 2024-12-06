@@ -1141,6 +1141,18 @@ config TI_ADS1015
 	  This driver can also be built as a module. If so, the module will be
 	  called ti-ads1015.
 
+config TI_ADS1120
+	tristate "Texas Instruments ADS1120 4-channel ADC"
+	depends on SPI
+	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
+	help
+	  If you say yes here you get support for Texas Instruments ADS1120,
+	  ADC chip.
+
+	  This driver can also be built as a module. If so, the module will be
+	  called ti-ads1120.
+
 config TI_ADS7950
 	tristate "Texas Instruments ADS7950 ADC driver"
 	depends on SPI && GPIOLIB

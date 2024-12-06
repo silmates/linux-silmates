@@ -115,7 +115,7 @@
 &iomuxc {
 
 	imx8mn-mez {
-	
+
 		// status LED
 		pinctrl_status_led: pinctrl_status_led {
 			fsl,pins = <
@@ -128,7 +128,7 @@
 				MX8MM_IOMUXC_SAI5_RXD0_GPIO3_IO21		0x19
 			>;
 		};
-		
+
 		pinctrl_mipi_extra: mipi_extra_grp {
 			fsl,pins = <
 				MX8MM_IOMUXC_SAI5_RXC_GPIO3_IO20		0x1c4
@@ -250,8 +250,73 @@
 				MX8MM_IOMUXC_GPIO1_IO15_USB2_OTG_OC		0x106
 			>;
 		};
+				
+		pinctrl_ecspi1: ecspi1grp {
+			fsl,pins = <
+				MX8MM_IOMUXC_ECSPI1_SCLK_ECSPI1_SCLK		0x82
+				MX8MM_IOMUXC_ECSPI1_MOSI_ECSPI1_MOSI		0x82
+				MX8MM_IOMUXC_ECSPI1_MISO_ECSPI1_MISO		0x82
+			>;
+		};
+
+		pinctrl_ecspi1_cs: ecspi1cs {
+			fsl,pins = <
+				MX8MM_IOMUXC_ECSPI1_SS0_GPIO5_IO9		0x40000
+			>;
+		};
+
+		pinctrl_ads1120_irq: ads1120irq {
+			fsl,pins = <
+				MX8MM_IOMUXC_GPIO1_IO05_GPIO1_IO5		0x40000
+			>;
+		};
+
 	};
 };
+
+
+&ecspi1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	fsl,spi-num-chipselects = <1>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_ecspi1 &pinctrl_ecspi1_cs &pinctrl_ads1120_irq>;
+	cs-gpios = <&gpio5 9 GPIO_ACTIVE_LOW>;
+	status = "okay";
+
+        ads1120: adc@0 {
+            reg = <0>;
+            compatible = "ti,ads1120";
+            #address-cells = <1>;
+            #size-cells = <0>;
+            ti,vref = <1>;		// Vref from REFP0 and REFN0 pins
+            spi-max-frequency = <1000000>;
+            spi-cpha;
+/*
+            interrupt-parent = <&gpio1>;
+            interrupts = <5 IRQ_TYPE_EDGE_FALLING>;
+*/
+            channel@0 {
+              reg = <0>;
+              ti,idac-ua = <250>;
+              ti,idac-mux = <0>;
+              ti,mux = <11>;
+            };
+            channel@1 {
+              reg = <1>;
+              ti,idac-ua = <250>;
+              ti,idac-mux = <1>;
+              ti,mux = <11>;
+            };
+            channel@2 {
+              reg = <2>;
+              ti,idac-ua = <250>;
+              ti,idac-mux = <2>;
+              ti,mux = <11>;
+            };
+        };
+};
+
 
 &i2c1 {
     eeprom_bb: eeprom@53 {
@@ -298,19 +363,37 @@
 		pinctrl-0 = <&pinctrl_expander>;
 		reset-gpios = <&gpio3 22 GPIO_ACTIVE_LOW>;
 
+/*		disable-hi-speed;*/
+
 		self-powered;
 		individual-sensing;
+
 /*		single-tt;*/
+		oc-delay-us = <16000>;
+
 		multi-tt;
-		disable-eop;
+/*		disable-eop;*/
 		individual-port-switching;
 		dynamic-power-switching;
-		oc-delay-us = <8>;
 		compound-device;
 		led-usb-mode;
 
+		power-on-time-ms = <30>;
 		string-support;
-		non-removable-ports = <6 7>;
+
+		/* add printer,qwerty,pmu,ft4232 */
+		non-removable-ports = <3 6 7>; 
+		bp-disabled-ports = <3 6 7>;
+
+		bp-max-total-current-microamp = <500000>;
+		sp-max-total-current-microamp = <100000>;
+		sp-max-removable-current-microamp = <100000>;
+		bp-max-removable-current-microamp = <500000>;
+
+/*
+		sp-disabled-ports = <1 2 4 5>;
+		bp-disabled-ports = <3 6 7>;
+*/
 /*
 		non-removable-ports = <1 2 3 6 7>;
 		sp-disabled-ports = <>;
@@ -363,6 +446,7 @@
 		interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
 		irq-gpios = <&gpio4 0 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&gpio4 1 GPIO_ACTIVE_HIGH>;
+		touchscreen-inverted-x = <1>;
 		touchscreen-inverted-y = <1>;
 		status = "okay";
 	};
@@ -388,8 +472,16 @@
 	status = "okay";
 
 	panel@0 {
-/*		compatible = "boe,ts101wxu-nwo";*/
+/*
+		compatible = "boe,ts101wxu-nwo";
+		panel-width-mm = <216>;
+		panel-height-mm = <135>;
+		rotation = <270>;
+*/
 		compatible = "boe,nt156whm-n44";
+		panel-width-mm = <344>;
+		panel-height-mm = <193>;
+
 		reg = <0>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_mipi_en>;
@@ -400,8 +492,6 @@
 					 * 1: non-burst mode with sync event
 					 * 2: non-burst mode with sync pulse
 					 */
-		panel-width-mm = <344>;
-		panel-height-mm = <193>;
 		status = "okay";
 
 	};
