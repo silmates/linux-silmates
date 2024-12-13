@@ -107,7 +107,18 @@
 			sound-dai = <&sai2>;
 		};
 	};
-	
+
+	rotary-encoder {
+		compatible = "rotary-encoder";
+		status = "okay";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_rotary_encoder>;
+		gpios = <&gpio4 20 GPIO_ACTIVE_HIGH>, <&gpio4 10 GPIO_ACTIVE_HIGH>;
+		linux,axis = <0>; /* REL_X */
+		rotary-encoder,encoding = "gray";
+		rotary-encoder,relative-axis;
+    };
+
 
 };
 
@@ -115,6 +126,13 @@
 &iomuxc {
 
 	imx8mn-mez {
+
+		pinctrl_rotary_encoder: rotaryencodergrp {
+			fsl,pins = <
+				MX8MM_IOMUXC_SAI1_MCLK_GPIO4_IO20		0x106	/* ENC A */
+				MX8MM_IOMUXC_SAI1_TXFS_GPIO4_IO10		0x106	/* ENC B */
+			>;
+		};
 
 		// status LED
 		pinctrl_status_led: pinctrl_status_led {
