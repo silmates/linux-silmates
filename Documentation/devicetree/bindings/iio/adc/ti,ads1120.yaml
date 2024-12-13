@@ -97,6 +97,11 @@ patternProperties:
           6: 64
           7: 128
 
+      ti,gain-bypass:
+        description:
+          Boolean property which set's the gain to be bypassed for this channel.
+        type: boolean
+
       ti,datarate:
         $ref: /schemas/types.yaml#/definitions/uint32
         minimum: 0
@@ -147,6 +152,10 @@ patternProperties:
           5: IDAC connected to REFP0
           6: IDAC connected to REFN0
 
+      ti,rsense-val-milli-ohms:
+        description:
+          Sets the value of the sense resistor.
+
     required:
       - reg
 
@@ -170,6 +179,7 @@ examples:
               ti,idac-ua = <250>;
               ti,idac-mux = <0>;
               ti,mux = <11>;
+              ti,gain-bypass;
             };
             channel@1 {
               reg = <1>;
@@ -179,6 +189,7 @@ examples:
               ti,idac-ua = <250>;
               ti,idac-mux = <1>;
               ti,mux = <11>;
+              ti,rsense-val-milli-ohms = <1650000>; //1.65Kohms
             };
             channel@2 {
               reg = <2>;
@@ -188,6 +199,7 @@ examples:
               ti,idac-ua = <250>;
               ti,idac-mux = <2>;
               ti,mux = <11>;
+              ti,rsense-val-milli-ohms = <1650000>; //1.65Kohms
             };
         };
     };

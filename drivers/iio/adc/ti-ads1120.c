@@ -29,10 +29,10 @@
 #define ADS1120_CMD_RESET		0x06
 #define ADS1120_CMD_START		0x08
 #define ADS1120_CMD_STOP		0x0A
-#define ADS1120_CMD_POWERDOWN		0x02
+#define ADS1120_CMD_POWERDOWN	0x02
 #define ADS1120_CMD_RDATA		0x12
-#define ADS1120_CMD_RREG(r)		(BIT(5) | (r & GENMASK(4, 0)))
-#define ADS1120_CMD_WREG(r)		(BIT(6) | (r & GENMASK(4, 0)))
+#define ADS1120_CMD_RREG(r,n)		(BIT(5) | ((r & GENMASK(1, 0)) << 2) | (n & GENMASK(1, 0)))
+#define ADS1120_CMD_WREG(r,n)		(BIT(6) | ((r & GENMASK(1, 0)) << 2) | (n & GENMASK(1, 0)))
 
 #define ADS1120_CFG0_REG	0x00
 #define ADS1120_CFG1_REG	0x01
@@ -122,15 +122,9 @@
 #define ADS1120_MAX_CHANNELS	4
 
 #define ADS1120_WAIT_RESET_CYCLES	18
-// #define ADS1120_WAIT_SDECODE_CYCLES	4
-// #define ADS1120_WAIT_OFFSETCAL_MS	153
 #define ADS1120_MAX_SETTLING_TIME_MS	6
 
-// #define ADS1120_NUM_STATUS_BYTES	0
 #define ADS1120_NUM_DATA_BYTES_MAX	2
-// #define ADS1120_NUM_DATA_BYTES(dr)	(((dr) >= 32) ? 2 : 3)
-// #define ADS1120_NUM_DATA_BITS(dr)	(ADS1120_NUM_DATA_BYTES(dr) * 8)
-// #define ADS1120_NUM_STORAGE_BYTES	4
 
 
 enum ads1120_ids {
@@ -154,12 +148,15 @@ struct ads1120_info {
 };
 
 struct ads1120_channel_config {
+	unsigned int raw_value;
 	unsigned int data_rate;
 	unsigned int idac;
 	unsigned int idac_ua;
 	unsigned int idac_mux;
 	unsigned int pga_gain;
 	unsigned int mux;
+	unsigned int r_sense_val;
+	bool pga_bypass;
 };
 
 struct ads1120_data_rate_desc {
@@ -206,10 +203,11 @@ static const struct ads1120_pga_gain_desc ads1120_pga_gain_tbl[] = {
 	{ .gain = 1,   .reg = 0x00 },
 	{ .gain = 2,   .reg = 0x01 },
 	{ .gain = 4,   .reg = 0x02 },
+	{ .gain = 8,   .reg = 0x03 },
 	{ .gain = 16,  .reg = 0x04 },
 	{ .gain = 32,  .reg = 0x05 },
 	{ .gain = 64,  .reg = 0x06 },
-	{ .gain = 128, .reg = 0x06 },
+	{ .gain = 128, .reg = 0x07 },
 };
 
 struct ads1120_idac_desc {
@@ -218,6 +216,7 @@ struct ads1120_idac_desc {
 };
 
 static const struct ads1120_idac_desc ads1120_idac_tbl[] = {
+	{ .uA = 0,    .reg = 0x00 },
 	{ .uA = 50,   .reg = 0x02 },
 	{ .uA = 100,  .reg = 0x03 },
 	{ .uA = 250,  .reg = 0x04 },
@@ -245,8 +244,6 @@ struct ads1120_state {
 	unsigned int operating_mode;
 
 	struct completion completion;
-
-	// u16 buffer[ADS1120_MAX_CHANNELS];
 
 	struct {
 		u16 data[ADS1120_MAX_CHANNELS];
@@ -285,19 +282,14 @@ static int ads1120_read_reg(struct ads1120_state *st, u8 reg)
 	struct spi_transfer transfer[] = {
 		{
 			.tx_buf = &st->tx_buf,
-			.len = 2,
-			.delay = {
-				.value = st->sdecode_delay_us,
-				.unit = SPI_DELAY_UNIT_USECS,
-			},
+			.len = 1,
 		}, {
 			.rx_buf = &st->rx_buf,
 			.len = 1,
 		},
 	};
 
-	st->tx_buf[0] = ADS1120_CMD_RREG(reg);
-	st->tx_buf[1] = 0;
+	st->tx_buf[0] = ADS1120_CMD_RREG(reg,0);
 
 	ret = spi_sync_transfer(st->spi, transfer, ARRAY_SIZE(transfer));
 	if (ret) {
@@ -314,17 +306,12 @@ static int ads1120_write_reg(struct ads1120_state *st, u8 reg, u8 value)
 	struct spi_transfer transfer[] = {
 		{
 			.tx_buf = &st->tx_buf,
-			.len = 3,
-			.delay = {
-				.value = st->sdecode_delay_us,
-				.unit = SPI_DELAY_UNIT_USECS,
-			},
+			.len = 2,
 		}
 	};
 
-	st->tx_buf[0] = ADS1120_CMD_WREG(reg);
-	st->tx_buf[1] = 0;
-	st->tx_buf[2] = value;
+	st->tx_buf[0] = ADS1120_CMD_WREG(reg,0);
+	st->tx_buf[1] = value;
 
 	ret = spi_sync_transfer(st->spi, transfer, ARRAY_SIZE(transfer));
 	if (ret)
@@ -375,7 +362,7 @@ static int ads1120_data_rate_to_field_value(struct ads1120_state *st,
 
 static int ads1120_set_data_rate(struct ads1120_state *st, unsigned int data_rate)
 {
-	int i, reg, ret;
+	int i, reg, ret,read;
 
 	for (i = 0; i < ARRAY_SIZE(ads1120_data_rate_normal_tbl); i++) {
 		if (ads1120_data_rate_normal_tbl[i].rate == data_rate)
@@ -387,10 +374,11 @@ static int ads1120_set_data_rate(struct ads1120_state *st, unsigned int data_rat
 		return -EINVAL;
 	}
 
-	reg = ads1120_read_reg(st, ADS1120_CFG1_REG);
-	if (reg < 0)
-		return reg;
+	read = ads1120_read_reg(st, ADS1120_CFG1_REG);
+	if (read < 0)
+		return read;
 
+	reg = read;
 	reg &= ~ADS1120_CFG1_DR_MASK;
 	reg |= FIELD_PREP(ADS1120_CFG1_DR_MASK,
 		ads1120_data_rate_normal_tbl[i].reg);
@@ -400,9 +388,6 @@ static int ads1120_set_data_rate(struct ads1120_state *st, unsigned int data_rat
 		return ret;
 
 	st->data_rate = data_rate;
-	// st->readback_len = ADS1120_NUM_STATUS_BYTES +
-	// 	ADS1120_NUM_DATA_BYTES(st->data_rate) *
-	// 	st->info->max_channels;
 
 	return 0;
 }
@@ -426,20 +411,24 @@ static int ads1120_pga_gain_to_field_value(struct ads1120_state *st,
 }
 
 static int ads1120_set_pga_gain(struct ads1120_state *st,
-	unsigned int channel, unsigned int pga_gain)
+	unsigned int channel,unsigned int pga_gain)
 {
-	int field_value, reg;
+	int field_value, reg, read;
 
 	field_value = ads1120_pga_gain_to_field_value(st, pga_gain);
 	if (field_value < 0)
 		return field_value;
 
-	reg = ads1120_read_reg(st, ADS1120_CFG0_REG);
-	if (reg < 0)
-		return reg;
+	read = ads1120_read_reg(st, ADS1120_CFG0_REG);
+	if (read < 0)
+		return read;
 
+	reg = read;
 	reg &= ~ADS1120_CFG0_GAIN_MASK;
 	reg |= FIELD_PREP(ADS1120_CFG0_GAIN_MASK, field_value);
+
+	reg &= ~ADS1120_CFG0_PGA_BYPASS_MASK;
+	reg |= FIELD_PREP(ADS1120_CFG0_PGA_BYPASS_MASK, st->channel_config[channel].pga_bypass);
 
 	return ads1120_write_reg(st, ADS1120_CFG0_REG, reg);
 }
@@ -447,12 +436,13 @@ static int ads1120_set_pga_gain(struct ads1120_state *st,
 static int ads1120_set_idac_mux(struct ads1120_state *st,
 	unsigned int idac_channel,unsigned int idac_mux)
 {
-	int reg;
+	int reg,read;
 
-	reg = ads1120_read_reg(st, ADS1120_CFG3_REG);
-	if (reg < 0)
-		return reg;
+	read = ads1120_read_reg(st, ADS1120_CFG3_REG);
+	if (read < 0)
+		return read;
 
+	reg = read;
 	if(idac_channel == ads1120_idac1){
 		reg &= ~ADS1120_CFG3_I1MUX_MASK;
 		reg |= FIELD_PREP(ADS1120_CFG3_I1MUX_MASK, idac_mux);
@@ -485,16 +475,17 @@ static int ads1120_idac_ua_to_field_value(struct ads1120_state *st,
 static int ads1120_set_idac_ua(struct ads1120_state *st,
 	unsigned int idac_ua)
 {
-	int field_value, reg;
+	int field_value, reg, read;
 
 	field_value = ads1120_idac_ua_to_field_value(st, idac_ua);
 	if (field_value < 0)
 		return field_value;
 
-	reg = ads1120_read_reg(st, ADS1120_CFG2_REG);
-	if (reg < 0)
-		return reg;
+	read = ads1120_read_reg(st, ADS1120_CFG2_REG);
+	if (read < 0)
+		return read;
 
+	reg = read;
 	reg &= ~ADS1120_CFG2_IDAC_MASK;
 	reg |= FIELD_PREP(ADS1120_CFG2_IDAC_MASK, field_value);
 
@@ -522,12 +513,13 @@ static int ads1120_validate_channel_mux(struct ads1120_state *st,
 static int ads1120_set_channel_mux(struct ads1120_state *st,
 	unsigned int channel, unsigned int mux)
 {
-	int reg;
+	int reg,read;
 
-	reg = ads1120_read_reg(st, ADS1120_CFG0_REG);
-	if (reg < 0)
-		return reg;
+	read = ads1120_read_reg(st, ADS1120_CFG0_REG);
+	if (read < 0)
+		return read;
 
+	reg = read;
 	reg &= ~ADS1120_CFG0_MUX_MASK;
 	reg |= FIELD_PREP(ADS1120_CFG0_MUX_MASK, mux);
 
@@ -536,12 +528,13 @@ static int ads1120_set_channel_mux(struct ads1120_state *st,
 
 static int ads1120_config_reference_voltage(struct ads1120_state *st)
 {
-	int reg;
+	int reg,read;
 
-	reg = ads1120_read_reg(st, ADS1120_CFG2_REG);
-	if (reg < 0)
-		return reg;
+	read = ads1120_read_reg(st, ADS1120_CFG2_REG);
+	if (read < 0)
+		return read;
 
+	reg = read;
 	reg &= ~ADS1120_CFG2_VREF_MASK;
 	reg |= FIELD_PREP(ADS1120_CFG2_VREF_MASK,
 		st->vref);
@@ -551,9 +544,7 @@ static int ads1120_config_reference_voltage(struct ads1120_state *st)
 
 static int ads1120_initial_config(struct iio_dev *indio_dev)
 {
-	// const struct iio_chan_spec *channel = indio_dev->channels;
 	struct ads1120_state *st = iio_priv(indio_dev);
-	// unsigned long active_channels = 0;
 	int ret;
 
 	ret = ads1120_exec_cmd(st, ADS1120_CMD_RESET);
@@ -575,12 +566,19 @@ static int ads1120_initial_config(struct iio_dev *indio_dev)
 
 static int ads1120_read_channel_data(struct ads1120_state *st,unsigned int channel, u16 * value)
 {
-	unsigned long timeout;
 	int ret;
 
-	dev_err(&st->spi->dev, "%s() : %d - %d \n",__FILE__,__LINE__,channel);
+	ret = ads1120_set_channel_mux(st, channel,st->channel_config[channel].mux);
+	if (ret) {
+		dev_err(&st->spi->dev, "Set CH : %d mux failed\n",channel);
+		return ret;
+	}
 
-	// reinit_completion(&st->completion);
+	ret = ads1120_set_pga_gain(st, channel, st->channel_config[channel].pga_gain);
+	if (ret) {
+		dev_err(&st->spi->dev, "Set CH : %d pga gain failed\n",channel);
+		return ret;
+	}
 
 	ret = ads1120_set_idac_ua(st, st->channel_config[channel].idac_ua);
 	if (ret) {
@@ -588,14 +586,6 @@ static int ads1120_read_channel_data(struct ads1120_state *st,unsigned int chann
 		return ret;
 	}
 
-	dev_err(&st->spi->dev, "%s() : %d - %d \n",__FILE__,__LINE__,channel);
-	ret = ads1120_set_pga_gain(st, channel,st->channel_config[channel].pga_gain);
-	if (ret) {
-		dev_err(&st->spi->dev, "Set CH : %d pga gain failed\n",channel);
-		return ret;
-	}
-
-	dev_err(&st->spi->dev, "%s() : %d - %d \n",__FILE__,__LINE__,channel);
 	ret = ads1120_set_idac_mux(st, 
 		st->channel_config[channel].idac, 
 		st->channel_config[channel].idac_mux);
@@ -604,33 +594,56 @@ static int ads1120_read_channel_data(struct ads1120_state *st,unsigned int chann
 		return ret;
 	}
 
-	dev_err(&st->spi->dev, "%s() : %d - %d \n",__FILE__,__LINE__,channel);
-	ret = ads1120_set_channel_mux(st, channel,st->channel_config[channel].mux);
-	if (ret) {
-		dev_err(&st->spi->dev, "Set CH : %d mux failed\n",channel);
-		return ret;
-	}
-
-	dev_err(&st->spi->dev, "%s() : %d - %d \n",__FILE__,__LINE__,channel);
 	ret = ads1120_exec_cmd(st, ADS1120_CMD_START);
 	if (ret)
 		return ret;
 
-	// timeout = msecs_to_jiffies(ADS1120_MAX_SETTLING_TIME_MS);
-	// ret = wait_for_completion_timeout(&st->completion, timeout);
-	// if (!ret)
-	// 	return -ETIMEDOUT;
-
-	dev_err(&st->spi->dev, "%s() : %d - %d \n",__FILE__,__LINE__,channel);
 	ret = ads1120_read_data(st, 2);
 	if (ret)
 		return ret;
 
 	*value = get_unaligned_be16(&st->rx_buf[0]);
 
-	dev_err(&st->spi->dev, "%s() : %d - %d 0x%x 0x%x - %d \n",__FILE__,__LINE__,channel,st->rx_buf[0],st->rx_buf[1],*value);
 	return ads1120_exec_cmd(st, ADS1120_CMD_STOP);
 }
+
+static int ads1120_set_scale(struct ads1120_state *data,
+			     struct iio_chan_spec const *chan,
+			     int scale)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(ads1120_pga_gain_tbl); i++) {
+		if (ads1120_pga_gain_tbl[i].gain == scale) {
+			data->channel_config[chan->channel].pga_gain = scale;
+			if(scale == 1){
+				data->channel_config[chan->channel].pga_bypass = true;
+			} else {
+				data->channel_config[chan->channel].pga_bypass = false;
+			}
+			return 0;
+		}
+	}
+
+	return -EINVAL;
+}
+
+static int ads1120_set_idac(struct ads1120_state *data,
+			     struct iio_chan_spec const *chan,
+			     int bias)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(ads1120_idac_tbl); i++) {
+		if (ads1120_idac_tbl[i].uA == bias) {
+			data->channel_config[chan->channel].idac_ua = bias;
+			return 0;
+		}
+	}
+
+	return -EINVAL;
+}
+
 
 static int ads1120_read_raw(struct iio_dev *indio_dev,
 	struct iio_chan_spec const *channel, int *value,
@@ -647,6 +660,7 @@ static int ads1120_read_raw(struct iio_dev *indio_dev,
 		// 	return ret;
 
 		ret = ads1120_read_channel_data(st, channel->channel, &local_value);
+		st->channel_config[channel->channel].raw_value = local_value;
 		*value = local_value;
 		// iio_device_release_direct_mode(indio_dev);
 		// if (ret)
@@ -654,24 +668,16 @@ static int ads1120_read_raw(struct iio_dev *indio_dev,
 
 		return IIO_VAL_INT;
 
-	// case IIO_CHAN_INFO_SCALE:
-	// 	// if (st->vref_reg) {
-	// 	// 	ret = regulator_get_voltage(st->vref_reg);
-	// 	// 	if (ret < 0)
-	// 	// 		return ret;
+	case IIO_CHAN_INFO_SCALE:
+		*value = st->channel_config[channel->channel].pga_gain;
+		return IIO_VAL_INT;
 
-	// 	// 	*value = ret / 1000;
-	// 	// } else {
-	// 		*value = st->vref_mv;
-	// 	// }
-
-	// 	*value /= st->channel_config[channel->address].pga_gain;
-
-	// 	return IIO_VAL_FRACTIONAL_LOG2;
+	case IIO_CHAN_INFO_CALIBBIAS:
+		*value = st->channel_config[channel->channel].idac_ua;
+		return IIO_VAL_INT;
 
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		*value = st->data_rate;
-
 		return IIO_VAL_INT;
 
 	default:
@@ -684,16 +690,28 @@ static int ads1120_write_raw(struct iio_dev *indio_dev,
 	int value2, long mask)
 {
 	struct ads1120_state *st = iio_priv(indio_dev);
-	int ret;
+	int ret,i;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_SAMP_FREQ:
-		// ret = iio_device_claim_direct_mode(indio_dev);
-		// if (ret)
-		// 	return ret;
+		for(i=0 ; i<indio_dev->num_channels ; i++)
+		{
+			ret = ads1120_set_data_rate(st, value);
+		}
+		return ret;
 
-		ret = ads1120_set_data_rate(st, value);
-		// iio_device_release_direct_mode(indio_dev);
+	case IIO_CHAN_INFO_SCALE:
+		for(i=0 ; i<indio_dev->num_channels ; i++)
+		{
+			ret = ads1120_set_scale(st, &indio_dev->channels[i], value);
+		}
+		return ret;
+
+	case IIO_CHAN_INFO_CALIBBIAS:
+		for(i=0 ; i<indio_dev->num_channels ; i++)
+		{
+			ret = ads1120_set_idac(st, &indio_dev->channels[i], value);
+		}
 		return ret;
 
 	default:
@@ -715,10 +733,27 @@ static int ads1120_debugfs_reg_access(struct iio_dev *indio_dev,
 	return ads1120_write_reg(st, reg, writeval);
 }
 
+static IIO_CONST_ATTR_NAMED(ads1120_gain_available, scale_available,
+	"1 2 4 8 16 32 64 128");
+
+static IIO_CONST_ATTR_NAMED(ads1120_bias_available, bias_available,
+	"0 50 100 250 500 1000 1500");
+
+static struct attribute *ads1120_attributes[] = {
+	&iio_const_attr_ads1120_gain_available.dev_attr.attr,
+	&iio_const_attr_ads1120_bias_available.dev_attr.attr,
+	NULL
+};
+
+static const struct attribute_group ads1120_attribute_group = {
+	.attrs = ads1120_attributes,
+};
+
 static const struct iio_info ads1120_iio_info = {
 	.read_raw = ads1120_read_raw,
 	.write_raw = ads1120_write_raw,
 	.debugfs_reg_access = &ads1120_debugfs_reg_access,
+	.attrs = &ads1120_attribute_group,
 };
 
 static int ads1120_set_trigger_state(struct iio_trigger *trig, bool state)
@@ -734,7 +769,7 @@ static const struct iio_trigger_ops ads1120_trigger_ops = {
 	.set_trigger_state = &ads1120_set_trigger_state,
 	.validate_device = &iio_trigger_validate_own_device,
 };
-
+/*
 static irqreturn_t ads1120_trigger_handler(int irq, void *private)
 {
 	struct iio_poll_func *pf = private;
@@ -768,13 +803,32 @@ static irqreturn_t ads1120_interrupt(int irq, void *private)
 	struct iio_dev *indio_dev = private;
 	struct ads1120_state *st = iio_priv(indio_dev);
 
-	// if (iio_buffer_enabled(indio_dev) && iio_trigger_using_own(indio_dev))
+	if (iio_buffer_enabled(indio_dev) && iio_trigger_using_own(indio_dev))
 		iio_trigger_poll(st->trig);
-	// else
-	// 	complete(&st->completion);
+	else
+		complete(&st->completion);
 
 	return IRQ_HANDLED;
 }
+*/
+#define ADS1120_CHAN(__type, index, __address) ({ \
+	struct iio_chan_spec __chan = { \
+		.type = __type, \
+		.indexed = 1, \
+		.channel = index, \
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) , \
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE) | BIT(IIO_CHAN_INFO_CALIBBIAS), \
+		.scan_index = index,					\
+		.scan_type = {						\
+			.sign = 's',					\
+			.realbits = 16,					\
+			.storagebits = 32,				\
+			.shift = 8,					\
+			.endianness = IIO_BE,				\
+		},							\
+	}; \
+	__chan; \
+})
 
 static int ads1120_alloc_channels(struct iio_dev *indio_dev)
 {
@@ -860,6 +914,9 @@ static int ads1120_alloc_channels(struct iio_dev *indio_dev)
 			channel_config[i].pga_gain = tmp;
 		}
 
+		if (fwnode_property_read_bool(node, "ti,gain-bypass"))
+			channel_config[i].pga_bypass = true;
+
 		ret = fwnode_property_read_u32(node, "ti,datarate", &tmp);
 		if (ret) {
 			channel_config[i].data_rate = ADS1120_DEFAULT_DATA_RATE;
@@ -907,19 +964,15 @@ static int ads1120_alloc_channels(struct iio_dev *indio_dev)
 			channel_config[i].mux = tmp;
 		}
 
-		channels[i].type = IIO_VOLTAGE;
-		channels[i].indexed = 1;
-		channels[i].channel = channel;
-		channels[i].address = i;
-		channels[i].info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
-						BIT(IIO_CHAN_INFO_SCALE);
-		channels[i].info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SAMP_FREQ);
-		channels[i].scan_index = channel;
-		channels[i].scan_type.sign = 's';
-		channels[i].scan_type.realbits = 16;
-		channels[i].scan_type.storagebits = 32;
-		channels[i].scan_type.shift = 8;
-		channels[i].scan_type.endianness = IIO_BE;
+		ret = fwnode_property_read_u32(node, "ti,rsense-val-milli-ohms", &tmp);
+		if (ret) {
+			channel_config[i].r_sense_val = 1;
+		} else {
+			/* Times 1000 because we have milli-ohms */
+			channel_config[i].r_sense_val = tmp;
+		}
+
+		channels[i] = ADS1120_CHAN(IIO_TEMP,channel,i);
 		i++;
 	}
 
@@ -998,13 +1051,13 @@ static int ads1120_probe(struct spi_device *spi)
 
 	// indio_dev->trig = iio_trigger_get(st->trig);
 
-	ret = devm_iio_triggered_buffer_setup(&spi->dev, indio_dev,
-		NULL, &ads1120_trigger_handler, NULL);
-	if (ret) {
-		dev_err(&spi->dev, "failed to setup IIO buffer\n");
-		return ret;
-	}
-	
+	// ret = devm_iio_triggered_buffer_setup(&spi->dev, indio_dev,
+	// 	NULL, &ads1120_trigger_handler, NULL);
+	// if (ret) {
+	// 	dev_err(&spi->dev, "failed to setup IIO buffer\n");
+	// 	return ret;
+	// }
+
 	st->sdecode_delay_us = 0;
 	st->reset_delay_us = 50;
 
