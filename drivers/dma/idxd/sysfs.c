@@ -387,7 +387,7 @@ static ssize_t group_traffic_class_a_store(struct device *dev,
 	if (idxd->state == IDXD_DEV_ENABLED)
 		return -EPERM;
 
-	if (idxd->hw.version < DEVICE_VERSION_2 && !tc_override)
+	if (idxd->hw.version <= DEVICE_VERSION_2 && !tc_override)
 		return -EPERM;
 
 	if (val < 0 || val > 7)
@@ -429,7 +429,7 @@ static ssize_t group_traffic_class_b_store(struct device *dev,
 	if (idxd->state == IDXD_DEV_ENABLED)
 		return -EPERM;
 
-	if (idxd->hw.version < DEVICE_VERSION_2 && !tc_override)
+	if (idxd->hw.version <= DEVICE_VERSION_2 && !tc_override)
 		return -EPERM;
 
 	if (val < 0 || val > 7)
@@ -528,6 +528,22 @@ static bool idxd_group_attr_progress_limit_invisible(struct attribute *attr,
 		!idxd->hw.group_cap.progress_limit;
 }
 
+static bool idxd_group_attr_read_buffers_invisible(struct attribute *attr,
+						   struct idxd_device *idxd)
+{
+	/*
+	 * Intel IAA does not support Read Buffer allocation control,
+	 * make these attributes invisible.
+	 */
+	return (attr == &dev_attr_group_use_token_limit.attr ||
+		attr == &dev_attr_group_use_read_buffer_limit.attr ||
+		attr == &dev_attr_group_tokens_allowed.attr ||
+		attr == &dev_attr_group_read_buffers_allowed.attr ||
+		attr == &dev_attr_group_tokens_reserved.attr ||
+		attr == &dev_attr_group_read_buffers_reserved.attr) &&
+		idxd->data->type == IDXD_TYPE_IAX;
+}
+
 static umode_t idxd_group_attr_visible(struct kobject *kobj,
 				       struct attribute *attr, int n)
 {
@@ -536,6 +552,9 @@ static umode_t idxd_group_attr_visible(struct kobject *kobj,
 	struct idxd_device *idxd = group->idxd;
 
 	if (idxd_group_attr_progress_limit_invisible(attr, idxd))
+		return 0;
+
+	if (idxd_group_attr_read_buffers_invisible(attr, idxd))
 		return 0;
 
 	return attr->mode;
@@ -1143,12 +1162,35 @@ static ssize_t wq_enqcmds_retries_store(struct device *dev, struct device_attrib
 static struct device_attribute dev_attr_wq_enqcmds_retries =
 		__ATTR(enqcmds_retries, 0644, wq_enqcmds_retries_show, wq_enqcmds_retries_store);
 
+static ssize_t op_cap_show_common(struct device *dev, char *buf, unsigned long *opcap_bmap)
+{
+	ssize_t pos;
+	int i;
+
+	pos = 0;
+	for (i = IDXD_MAX_OPCAP_BITS/64 - 1; i >= 0; i--) {
+		unsigned long val = opcap_bmap[i];
+
+		/* On systems where direct user submissions are not safe, we need to clear out
+		 * the BATCH capability from the capability mask in sysfs since we cannot support
+		 * that command on such systems.
+		 */
+		if (i == DSA_OPCODE_BATCH/64 && !confdev_to_idxd(dev)->user_submission_safe)
+			clear_bit(DSA_OPCODE_BATCH % 64, &val);
+
+		pos += sysfs_emit_at(buf, pos, "%*pb", 64, &val);
+		pos += sysfs_emit_at(buf, pos, "%c", i == 0 ? '\n' : ',');
+	}
+
+	return pos;
+}
+
 static ssize_t wq_op_config_show(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
 	struct idxd_wq *wq = confdev_to_wq(dev);
 
-	return sysfs_emit(buf, "%*pb\n", IDXD_MAX_OPCAP_BITS, wq->opcap_bmap);
+	return op_cap_show_common(dev, buf, wq->opcap_bmap);
 }
 
 static int idxd_verify_supported_opcap(struct idxd_device *idxd, unsigned long *opmask)
@@ -1233,6 +1275,14 @@ static bool idxd_wq_attr_op_config_invisible(struct attribute *attr,
 	       !idxd->hw.wq_cap.op_config;
 }
 
+static bool idxd_wq_attr_max_batch_size_invisible(struct attribute *attr,
+						  struct idxd_device *idxd)
+{
+	/* Intel IAA does not support batch processing, make it invisible */
+	return attr == &dev_attr_wq_max_batch_size.attr &&
+	       idxd->data->type == IDXD_TYPE_IAX;
+}
+
 static umode_t idxd_wq_attr_visible(struct kobject *kobj,
 				    struct attribute *attr, int n)
 {
@@ -1241,6 +1291,9 @@ static umode_t idxd_wq_attr_visible(struct kobject *kobj,
 	struct idxd_device *idxd = wq->idxd;
 
 	if (idxd_wq_attr_op_config_invisible(attr, idxd))
+		return 0;
+
+	if (idxd_wq_attr_max_batch_size_invisible(attr, idxd))
 		return 0;
 
 	return attr->mode;
@@ -1351,7 +1404,7 @@ static ssize_t op_cap_show(struct device *dev,
 {
 	struct idxd_device *idxd = confdev_to_idxd(dev);
 
-	return sysfs_emit(buf, "%*pb\n", IDXD_MAX_OPCAP_BITS, idxd->opcap_bmap);
+	return op_cap_show_common(dev, buf, idxd->opcap_bmap);
 }
 static DEVICE_ATTR_RO(op_cap);
 
@@ -1396,7 +1449,7 @@ static ssize_t pasid_enabled_show(struct device *dev,
 {
 	struct idxd_device *idxd = confdev_to_idxd(dev);
 
-	return sysfs_emit(buf, "%u\n", device_pasid_enabled(idxd));
+	return sysfs_emit(buf, "%u\n", device_user_pasid_enabled(idxd));
 }
 static DEVICE_ATTR_RO(pasid_enabled);
 
@@ -1533,6 +1586,43 @@ static ssize_t cmd_status_store(struct device *dev, struct device_attribute *att
 }
 static DEVICE_ATTR_RW(cmd_status);
 
+static bool idxd_device_attr_max_batch_size_invisible(struct attribute *attr,
+						      struct idxd_device *idxd)
+{
+	/* Intel IAA does not support batch processing, make it invisible */
+	return attr == &dev_attr_max_batch_size.attr &&
+	       idxd->data->type == IDXD_TYPE_IAX;
+}
+
+static bool idxd_device_attr_read_buffers_invisible(struct attribute *attr,
+						    struct idxd_device *idxd)
+{
+	/*
+	 * Intel IAA does not support Read Buffer allocation control,
+	 * make these attributes invisible.
+	 */
+	return (attr == &dev_attr_max_tokens.attr ||
+		attr == &dev_attr_max_read_buffers.attr ||
+		attr == &dev_attr_token_limit.attr ||
+		attr == &dev_attr_read_buffer_limit.attr) &&
+		idxd->data->type == IDXD_TYPE_IAX;
+}
+
+static umode_t idxd_device_attr_visible(struct kobject *kobj,
+					struct attribute *attr, int n)
+{
+	struct device *dev = container_of(kobj, struct device, kobj);
+	struct idxd_device *idxd = confdev_to_idxd(dev);
+
+	if (idxd_device_attr_max_batch_size_invisible(attr, idxd))
+		return 0;
+
+	if (idxd_device_attr_read_buffers_invisible(attr, idxd))
+		return 0;
+
+	return attr->mode;
+}
+
 static struct attribute *idxd_device_attributes[] = {
 	&dev_attr_version.attr,
 	&dev_attr_max_groups.attr,
@@ -1560,6 +1650,7 @@ static struct attribute *idxd_device_attributes[] = {
 
 static const struct attribute_group idxd_device_attribute_group = {
 	.attrs = idxd_device_attributes,
+	.is_visible = idxd_device_attr_visible,
 };
 
 static const struct attribute_group *idxd_attribute_groups[] = {

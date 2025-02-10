@@ -30,6 +30,7 @@
 
 #include <linux/suspend.h>
 #include <linux/sync_file.h>
+#include <linux/hashtable.h>
 
 #include <drm/drm_auth.h>
 #include <drm/drm_device.h>
@@ -42,7 +43,6 @@
 #include "ttm_object.h"
 
 #include "vmwgfx_fence.h"
-#include "vmwgfx_hashtab.h"
 #include "vmwgfx_reg.h"
 #include "vmwgfx_validation.h"
 
@@ -59,8 +59,11 @@
 #define VMWGFX_DRIVER_MINOR 20
 #define VMWGFX_DRIVER_PATCHLEVEL 0
 #define VMWGFX_FIFO_STATIC_SIZE (1024*1024)
-#define VMWGFX_MAX_DISPLAYS 16
+#define VMWGFX_NUM_DISPLAY_UNITS 8
 #define VMWGFX_CMD_BOUNCE_INIT_SIZE 32768
+
+#define VMWGFX_MIN_INITIAL_WIDTH 1280
+#define VMWGFX_MIN_INITIAL_HEIGHT 800
 
 #define VMWGFX_PCI_ID_SVGA2              0x0405
 #define VMWGFX_PCI_ID_SVGA3              0x0406
@@ -76,7 +79,7 @@
 #define VMWGFX_NUM_GB_CONTEXT 256
 #define VMWGFX_NUM_GB_SHADER 20000
 #define VMWGFX_NUM_GB_SURFACE 32768
-#define VMWGFX_NUM_GB_SCREEN_TARGET VMWGFX_MAX_DISPLAYS
+#define VMWGFX_NUM_GB_SCREEN_TARGET VMWGFX_NUM_DISPLAY_UNITS
 #define VMWGFX_NUM_DXCONTEXT 256
 #define VMWGFX_NUM_DXQUERY 512
 #define VMWGFX_NUM_MOB (VMWGFX_NUM_GB_CONTEXT +\
@@ -93,6 +96,7 @@
 #define VMW_RES_STREAM ttm_driver_type2
 #define VMW_RES_FENCE ttm_driver_type3
 #define VMW_RES_SHADER ttm_driver_type4
+#define VMW_RES_HT_ORDER 12
 
 #define MKSSTAT_CAPACITY_LOG2 5U
 #define MKSSTAT_CAPACITY (1U << MKSSTAT_CAPACITY_LOG2)
@@ -102,11 +106,18 @@ struct vmw_fpriv {
 	bool gb_aware; /* user-space is guest-backed aware */
 };
 
+struct vmwgfx_hash_item {
+	struct hlist_node head;
+	unsigned long key;
+};
+
 /**
  * struct vmw_buffer_object - TTM buffer object with vmwgfx additions
  * @base: The TTM buffer object
  * @res_tree: RB tree of resources using this buffer object as a backing MOB
  * @base_mapped_count: ttm BO mapping count; used by KMS atomic helpers.
+ * @map_count: The number of currently active maps. Will differ from the
+ * cpu_writers because it includes kernel maps.
  * @cpu_writers: Number of synccpu write grabs. Protected by reservation when
  * increased. May be decreased without reservation.
  * @dx_query_ctx: DX context if this buffer object is used as a DX query MOB
@@ -120,6 +131,7 @@ struct vmw_buffer_object {
 	/* For KMS atomic helpers: ttm bo mapping count */
 	atomic_t base_mapped_count;
 
+	atomic_t map_count;
 	atomic_t cpu_writers;
 	/* Not ref-counted.  Protected by binding_mutex */
 	struct vmw_resource *dx_query_ctx;
@@ -425,8 +437,7 @@ struct vmw_ctx_validation_info;
  * @ctx: The validation context
  */
 struct vmw_sw_context{
-	struct vmwgfx_open_hash res_ht;
-	bool res_ht_initialized;
+	DECLARE_HASHTABLE(res_ht, VMW_RES_HT_ORDER);
 	bool kernel;
 	struct vmw_fpriv *fp;
 	struct drm_file *filp;
@@ -546,7 +557,6 @@ struct vmw_private {
 	 * Framebuffer info.
 	 */
 
-	void *fb_info;
 	enum vmw_display_unit_type active_display_unit;
 	struct vmw_legacy_display *ldu_priv;
 	struct vmw_overlay *overlay_priv;
@@ -604,8 +614,6 @@ struct vmw_private {
 	struct vmw_sw_context ctx;
 	struct mutex cmdbuf_mutex;
 	struct mutex binding_mutex;
-
-	bool enable_fb;
 
 	/**
 	 * PM management.
@@ -821,12 +829,7 @@ extern int vmw_user_resource_lookup_handle(
 	uint32_t handle,
 	const struct vmw_user_resource_conv *converter,
 	struct vmw_resource **p_res);
-extern struct vmw_resource *
-vmw_user_resource_noref_lookup_handle(struct vmw_private *dev_priv,
-				      struct ttm_object_file *tfile,
-				      uint32_t handle,
-				      const struct vmw_user_resource_conv *
-				      converter);
+
 extern int vmw_stream_claim_ioctl(struct drm_device *dev, void *data,
 				  struct drm_file *file_priv);
 extern int vmw_stream_unref_ioctl(struct drm_device *dev, void *data,
@@ -863,15 +866,6 @@ int vmw_resources_clean(struct vmw_buffer_object *vbo, pgoff_t start,
 static inline bool vmw_resource_mob_attached(const struct vmw_resource *res)
 {
 	return !RB_EMPTY_NODE(&res->mob_node);
-}
-
-/**
- * vmw_user_resource_noref_release - release a user resource pointer looked up
- * without reference
- */
-static inline void vmw_user_resource_noref_release(void)
-{
-	ttm_base_object_noref_release();
 }
 
 /**
@@ -925,8 +919,6 @@ extern void vmw_bo_unmap(struct vmw_buffer_object *vbo);
 extern void vmw_bo_move_notify(struct ttm_buffer_object *bo,
 			       struct ttm_resource *mem);
 extern void vmw_bo_swap_notify(struct ttm_buffer_object *bo);
-extern struct vmw_buffer_object *
-vmw_user_bo_noref_lookup(struct drm_file *filp, u32 handle);
 
 /**
  * vmw_bo_adjust_prio - Adjust the buffer object eviction priority
@@ -980,6 +972,11 @@ static inline void vmw_bo_prio_del(struct vmw_buffer_object *vbo, int prio)
 /**
  * GEM related functionality - vmwgfx_gem.c
  */
+extern int vmw_gem_object_create(struct vmw_private *dev_priv,
+				  size_t size, struct ttm_placement *placement,
+				  bool interruptible, bool pin,
+				  void (*bo_free)(struct ttm_buffer_object *bo),
+				  struct vmw_buffer_object **p_bo);
 extern int vmw_gem_object_create_with_handle(struct vmw_private *dev_priv,
 					     struct drm_file *filp,
 					     uint32_t size,
@@ -1184,35 +1181,6 @@ extern void vmw_generic_waiter_add(struct vmw_private *dev_priv, u32 flag,
 extern void vmw_generic_waiter_remove(struct vmw_private *dev_priv,
 				      u32 flag, int *waiter_count);
 
-
-/**
- * Kernel framebuffer - vmwgfx_fb.c
- */
-
-#ifdef CONFIG_DRM_FBDEV_EMULATION
-int vmw_fb_init(struct vmw_private *vmw_priv);
-int vmw_fb_close(struct vmw_private *dev_priv);
-int vmw_fb_off(struct vmw_private *vmw_priv);
-int vmw_fb_on(struct vmw_private *vmw_priv);
-#else
-static inline int vmw_fb_init(struct vmw_private *vmw_priv)
-{
-	return 0;
-}
-static inline int vmw_fb_close(struct vmw_private *dev_priv)
-{
-	return 0;
-}
-static inline int vmw_fb_off(struct vmw_private *vmw_priv)
-{
-	return 0;
-}
-static inline int vmw_fb_on(struct vmw_private *vmw_priv)
-{
-	return 0;
-}
-#endif
-
 /**
  * Kernel modesetting - vmwgfx_kms.c
  */
@@ -1229,12 +1197,6 @@ void vmw_kms_cursor_snoop(struct vmw_surface *srf,
 int vmw_kms_write_svga(struct vmw_private *vmw_priv,
 		       unsigned width, unsigned height, unsigned pitch,
 		       unsigned bpp, unsigned depth);
-bool vmw_kms_validate_mode_vram(struct vmw_private *dev_priv,
-				uint32_t pitch,
-				uint32_t height);
-u32 vmw_get_vblank_counter(struct drm_crtc *crtc);
-int vmw_enable_vblank(struct drm_crtc *crtc);
-void vmw_disable_vblank(struct drm_crtc *crtc);
 int vmw_kms_present(struct vmw_private *dev_priv,
 		    struct drm_file *file_priv,
 		    struct vmw_framebuffer *vfb,
@@ -1614,6 +1576,21 @@ vmw_bo_reference(struct vmw_buffer_object *buf)
 	return buf;
 }
 
+static inline struct vmw_buffer_object *vmw_user_bo_ref(struct vmw_buffer_object *vbo)
+{
+	drm_gem_object_get(&vbo->base.base);
+	return vbo;
+}
+
+static inline void vmw_user_bo_unref(struct vmw_buffer_object **buf)
+{
+	struct vmw_buffer_object *tmp_buf = *buf;
+
+	*buf = NULL;
+	if (tmp_buf)
+		drm_gem_object_put(&tmp_buf->base.base);
+}
+
 static inline void vmw_fifo_resource_inc(struct vmw_private *dev_priv)
 {
 	atomic_inc(&dev_priv->num_fifo_resources);
@@ -1695,6 +1672,18 @@ static inline bool vmw_has_fences(struct vmw_private *vmw)
 				  SVGA_CAP_CMD_BUFFERS_2)) != 0)
 		return true;
 	return (vmw_fifo_caps(vmw) & SVGA_FIFO_CAP_FENCE) != 0;
+}
+
+static inline bool vmw_shadertype_is_valid(enum vmw_sm_type shader_model,
+					   u32 shader_type)
+{
+	SVGA3dShaderType max_allowed = SVGA3D_SHADERTYPE_PREDX_MAX;
+
+	if (shader_model >= VMW_SM_5)
+		max_allowed = SVGA3D_SHADERTYPE_MAX;
+	else if (shader_model >= VMW_SM_4)
+		max_allowed = SVGA3D_SHADERTYPE_DX10_MAX;
+	return shader_type >= SVGA3D_SHADERTYPE_MIN && shader_type < max_allowed;
 }
 
 #endif

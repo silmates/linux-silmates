@@ -258,6 +258,9 @@ static const char * __init clkctrl_get_clock_name(struct device_node *np,
 	if (clkctrl_name && !legacy_naming) {
 		clock_name = kasprintf(GFP_KERNEL, "%s-clkctrl:%04x:%d",
 				       clkctrl_name, offset, index);
+		if (!clock_name)
+			return NULL;
+
 		strreplace(clock_name, '_', '-');
 
 		return clock_name;
@@ -305,7 +308,7 @@ _ti_clkctrl_clk_register(struct omap_clkctrl_provider *provider,
 	init.ops = ops;
 	init.flags = 0;
 
-	clk = ti_clk_register(NULL, clk_hw, init.name);
+	clk = of_ti_clk_register(node, clk_hw, init.name);
 	if (IS_ERR_OR_NULL(clk)) {
 		ret = -EINVAL;
 		goto cleanup;
@@ -519,6 +522,9 @@ static void __init _ti_omap4_clkctrl_setup(struct device_node *node)
 	int ret;
 	char *c;
 	u16 soc_mask = 0;
+	struct device_node *np = of_find_node_by_path("/ocp/ipu@58820000");
+	bool ipu_early_booted = of_property_read_bool(np, "late_attach");
+
 
 	addrp = of_get_address(node, 0, NULL, NULL);
 	addr = (u32)of_translate_address(node, addrp);
@@ -575,6 +581,13 @@ static void __init _ti_omap4_clkctrl_setup(struct device_node *node)
 		return;
 	}
 
+	/*
+	 * Do not initialize ipu_clkctrls if IPU is early booted to prevent
+	 * Kernel from messing up with its clks.
+	 */
+	if (data->addr == 0x4a005520 && ipu_early_booted)
+		return;
+
 	provider = kzalloc(sizeof(*provider), GFP_KERNEL);
 	if (!provider)
 		return;
@@ -586,6 +599,10 @@ static void __init _ti_omap4_clkctrl_setup(struct device_node *node)
 	if (clkctrl_name) {
 		provider->clkdm_name = kasprintf(GFP_KERNEL,
 						 "%s_clkdm", clkctrl_name);
+		if (!provider->clkdm_name) {
+			kfree(provider);
+			return;
+		}
 		goto clkdm_found;
 	}
 
@@ -682,7 +699,7 @@ clkdm_found:
 		init.ops = &omap4_clkctrl_clk_ops;
 		hw->hw.init = &init;
 
-		clk = ti_clk_register_omap_hw(NULL, &hw->hw, init.name);
+		clk = of_ti_clk_register_omap_hw(node, &hw->hw, init.name);
 		if (IS_ERR_OR_NULL(clk))
 			goto cleanup;
 

@@ -275,7 +275,7 @@ enum cache_io_mode {
 struct cache_features {
 	enum cache_metadata_mode mode;
 	enum cache_io_mode io_mode;
-	unsigned metadata_version;
+	unsigned int metadata_version;
 	bool discard_passdown:1;
 };
 
@@ -362,7 +362,7 @@ struct cache {
 	 * Rather than reconstructing the table line for the status we just
 	 * save it and regurgitate.
 	 */
-	unsigned nr_ctr_args;
+	unsigned int nr_ctr_args;
 	const char **ctr_args;
 
 	struct dm_kcopyd_client *copier;
@@ -378,7 +378,7 @@ struct cache {
 	unsigned long *dirty_bitset;
 	atomic_t nr_dirty;
 
-	unsigned policy_nr_args;
+	unsigned int policy_nr_args;
 	struct dm_cache_policy *policy;
 
 	/*
@@ -409,7 +409,7 @@ struct cache {
 
 struct per_bio_data {
 	bool tick:1;
-	unsigned req_nr:2;
+	unsigned int req_nr:2;
 	struct dm_bio_prison_cell_v2 *cell;
 	struct dm_hook_info hook_info;
 	sector_t len;
@@ -517,7 +517,7 @@ static void build_key(dm_oblock_t begin, dm_oblock_t end, struct dm_cell_key_v2 
 #define WRITE_LOCK_LEVEL 0
 #define READ_WRITE_LOCK_LEVEL 1
 
-static unsigned lock_level(struct bio *bio)
+static unsigned int lock_level(struct bio *bio)
 {
 	return bio_data_dir(bio) == WRITE ?
 		WRITE_LOCK_LEVEL :
@@ -907,14 +907,14 @@ static void abort_transaction(struct cache *cache)
 	if (get_cache_mode(cache) >= CM_READ_ONLY)
 		return;
 
-	if (dm_cache_metadata_set_needs_check(cache->cmd)) {
-		DMERR("%s: failed to set 'needs_check' flag in metadata", dev_name);
-		set_cache_mode(cache, CM_FAIL);
-	}
-
 	DMERR_LIMIT("%s: aborting current metadata transaction", dev_name);
 	if (dm_cache_metadata_abort(cache->cmd)) {
 		DMERR("%s: failed to abort metadata transaction", dev_name);
+		set_cache_mode(cache, CM_FAIL);
+	}
+
+	if (dm_cache_metadata_set_needs_check(cache->cmd)) {
+		DMERR("%s: failed to set 'needs_check' flag in metadata", dev_name);
 		set_cache_mode(cache, CM_FAIL);
 	}
 }
@@ -1805,6 +1805,7 @@ static void process_deferred_bios(struct work_struct *ws)
 
 		else
 			commit_needed = process_bio(cache, bio) || commit_needed;
+		cond_resched();
 	}
 
 	if (commit_needed)
@@ -1827,6 +1828,7 @@ static void requeue_deferred_bios(struct cache *cache)
 	while ((bio = bio_list_pop(&bios))) {
 		bio->bi_status = BLK_STS_DM_REQUEUE;
 		bio_endio(bio);
+		cond_resched();
 	}
 }
 
@@ -1867,6 +1869,8 @@ static void check_migrations(struct work_struct *ws)
 		r = mg_start(cache, op, NULL);
 		if (r)
 			break;
+
+		cond_resched();
 	}
 }
 
@@ -1878,10 +1882,8 @@ static void check_migrations(struct work_struct *ws)
  * This function gets called on the error paths of the constructor, so we
  * have to cope with a partially initialised struct.
  */
-static void destroy(struct cache *cache)
+static void __destroy(struct cache *cache)
 {
-	unsigned i;
-
 	mempool_exit(&cache->migration_pool);
 
 	if (cache->prison)
@@ -1914,13 +1916,22 @@ static void destroy(struct cache *cache)
 	if (cache->policy)
 		dm_cache_policy_destroy(cache->policy);
 
+	bioset_exit(&cache->bs);
+
+	kfree(cache);
+}
+
+static void destroy(struct cache *cache)
+{
+	unsigned int i;
+
+	cancel_delayed_work_sync(&cache->waker);
+
 	for (i = 0; i < cache->nr_ctr_args ; i++)
 		kfree(cache->ctr_args[i]);
 	kfree(cache->ctr_args);
 
-	bioset_exit(&cache->bs);
-
-	kfree(cache);
+	__destroy(cache);
 }
 
 static void cache_dtr(struct dm_target *ti)
@@ -1975,7 +1986,6 @@ struct cache_args {
 	sector_t cache_sectors;
 
 	struct dm_dev *origin_dev;
-	sector_t origin_sectors;
 
 	uint32_t block_size;
 
@@ -2056,6 +2066,7 @@ static int parse_cache_dev(struct cache_args *ca, struct dm_arg_set *as,
 static int parse_origin_dev(struct cache_args *ca, struct dm_arg_set *as,
 			    char **error)
 {
+	sector_t origin_sectors;
 	int r;
 
 	if (!at_least_one_arg(as, error))
@@ -2068,8 +2079,8 @@ static int parse_origin_dev(struct cache_args *ca, struct dm_arg_set *as,
 		return r;
 	}
 
-	ca->origin_sectors = get_dev_size(ca->origin_dev);
-	if (ca->ti->len > ca->origin_sectors) {
+	origin_sectors = get_dev_size(ca->origin_dev);
+	if (ca->ti->len > origin_sectors) {
 		*error = "Device size larger than cached device";
 		return -EINVAL;
 	}
@@ -2119,7 +2130,7 @@ static int parse_features(struct cache_args *ca, struct dm_arg_set *as,
 	};
 
 	int r, mode_ctr = 0;
-	unsigned argc;
+	unsigned int argc;
 	const char *arg;
 	struct cache_features *cf = &ca->features;
 
@@ -2379,7 +2390,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 
 	ca->metadata_dev = ca->origin_dev = ca->cache_dev = NULL;
 
-	origin_blocks = cache->origin_sectors = ca->origin_sectors;
+	origin_blocks = cache->origin_sectors = ti->len;
 	origin_blocks = block_div(origin_blocks, ca->block_size);
 	cache->origin_blocks = to_oblock(origin_blocks);
 
@@ -2533,13 +2544,13 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	*result = cache;
 	return 0;
 bad:
-	destroy(cache);
+	__destroy(cache);
 	return r;
 }
 
 static int copy_ctr_args(struct cache *cache, int argc, const char **argv)
 {
-	unsigned i;
+	unsigned int i;
 	const char **copy;
 
 	copy = kcalloc(argc, sizeof(*copy), GFP_KERNEL);
@@ -2561,7 +2572,7 @@ static int copy_ctr_args(struct cache *cache, int argc, const char **argv)
 	return 0;
 }
 
-static int cache_ctr(struct dm_target *ti, unsigned argc, char **argv)
+static int cache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	int r = -EINVAL;
 	struct cache_args *ca;
@@ -2584,7 +2595,7 @@ static int cache_ctr(struct dm_target *ti, unsigned argc, char **argv)
 
 	r = copy_ctr_args(cache, argc - 3, (const char **)argv + 3);
 	if (r) {
-		destroy(cache);
+		__destroy(cache);
 		goto out;
 	}
 
@@ -2664,7 +2675,7 @@ static int write_dirty_bitset(struct cache *cache)
 
 static int write_discard_bitset(struct cache *cache)
 {
-	unsigned i, r;
+	unsigned int i, r;
 
 	if (get_cache_mode(cache) >= CM_READ_ONLY)
 		return -EINVAL;
@@ -2867,19 +2878,19 @@ static dm_cblock_t get_cache_dev_size(struct cache *cache)
 static bool can_resize(struct cache *cache, dm_cblock_t new_size)
 {
 	if (from_cblock(new_size) > from_cblock(cache->cache_size)) {
-		if (cache->sized) {
-			DMERR("%s: unable to extend cache due to missing cache table reload",
-			      cache_device_name(cache));
-			return false;
-		}
+		DMERR("%s: unable to extend cache due to missing cache table reload",
+		      cache_device_name(cache));
+		return false;
 	}
 
 	/*
 	 * We can't drop a dirty block when shrinking the cache.
 	 */
-	while (from_cblock(new_size) < from_cblock(cache->cache_size)) {
-		new_size = to_cblock(from_cblock(new_size) + 1);
-		if (is_dirty(cache, new_size)) {
+	if (cache->loaded_mappings) {
+		new_size = to_cblock(find_next_bit(cache->dirty_bitset,
+						   from_cblock(cache->cache_size),
+						   from_cblock(new_size)));
+		if (new_size != cache->cache_size) {
 			DMERR("%s: unable to shrink cache; cache block %llu is dirty",
 			      cache_device_name(cache),
 			      (unsigned long long) from_cblock(new_size));
@@ -2915,20 +2926,15 @@ static int cache_preresume(struct dm_target *ti)
 	/*
 	 * Check to see if the cache has resized.
 	 */
-	if (!cache->sized) {
-		r = resize_cache_dev(cache, csize);
-		if (r)
-			return r;
-
-		cache->sized = true;
-
-	} else if (csize != cache->cache_size) {
+	if (!cache->sized || csize != cache->cache_size) {
 		if (!can_resize(cache, csize))
 			return -EINVAL;
 
 		r = resize_cache_dev(cache, csize);
 		if (r)
 			return r;
+
+		cache->sized = true;
 	}
 
 	if (!cache->loaded_mappings) {
@@ -2978,11 +2984,11 @@ static void cache_resume(struct dm_target *ti)
 }
 
 static void emit_flags(struct cache *cache, char *result,
-		       unsigned maxlen, ssize_t *sz_ptr)
+		       unsigned int maxlen, ssize_t *sz_ptr)
 {
 	ssize_t sz = *sz_ptr;
 	struct cache_features *cf = &cache->features;
-	unsigned count = (cf->metadata_version == 2) + !cf->discard_passdown + 1;
+	unsigned int count = (cf->metadata_version == 2) + !cf->discard_passdown + 1;
 
 	DMEMIT("%u ", count);
 
@@ -3022,10 +3028,10 @@ static void emit_flags(struct cache *cache, char *result,
  * <policy name> <#policy args> <policy args>* <cache metadata mode> <needs_check>
  */
 static void cache_status(struct dm_target *ti, status_type_t type,
-			 unsigned status_flags, char *result, unsigned maxlen)
+			 unsigned int status_flags, char *result, unsigned int maxlen)
 {
 	int r = 0;
-	unsigned i;
+	unsigned int i;
 	ssize_t sz = 0;
 	dm_block_t nr_free_blocks_metadata = 0;
 	dm_block_t nr_blocks_metadata = 0;
@@ -3062,18 +3068,18 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		residency = policy_residency(cache->policy);
 
 		DMEMIT("%u %llu/%llu %llu %llu/%llu %u %u %u %u %u %u %lu ",
-		       (unsigned)DM_CACHE_METADATA_BLOCK_SIZE,
+		       (unsigned int)DM_CACHE_METADATA_BLOCK_SIZE,
 		       (unsigned long long)(nr_blocks_metadata - nr_free_blocks_metadata),
 		       (unsigned long long)nr_blocks_metadata,
 		       (unsigned long long)cache->sectors_per_block,
 		       (unsigned long long) from_cblock(residency),
 		       (unsigned long long) from_cblock(cache->cache_size),
-		       (unsigned) atomic_read(&cache->stats.read_hit),
-		       (unsigned) atomic_read(&cache->stats.read_miss),
-		       (unsigned) atomic_read(&cache->stats.write_hit),
-		       (unsigned) atomic_read(&cache->stats.write_miss),
-		       (unsigned) atomic_read(&cache->stats.demotion),
-		       (unsigned) atomic_read(&cache->stats.promotion),
+		       (unsigned int) atomic_read(&cache->stats.read_hit),
+		       (unsigned int) atomic_read(&cache->stats.read_miss),
+		       (unsigned int) atomic_read(&cache->stats.write_hit),
+		       (unsigned int) atomic_read(&cache->stats.write_miss),
+		       (unsigned int) atomic_read(&cache->stats.demotion),
+		       (unsigned int) atomic_read(&cache->stats.promotion),
 		       (unsigned long) atomic_read(&cache->nr_dirty));
 
 		emit_flags(cache, result, maxlen, &sz);
@@ -3252,11 +3258,11 @@ static int request_invalidation(struct cache *cache, struct cblock_range *range)
 	return r;
 }
 
-static int process_invalidate_cblocks_message(struct cache *cache, unsigned count,
+static int process_invalidate_cblocks_message(struct cache *cache, unsigned int count,
 					      const char **cblock_ranges)
 {
 	int r = 0;
-	unsigned i;
+	unsigned int i;
 	struct cblock_range range;
 
 	if (!passthrough_mode(cache)) {
@@ -3293,8 +3299,8 @@ static int process_invalidate_cblocks_message(struct cache *cache, unsigned coun
  *
  * The key migration_threshold is supported by the cache target core.
  */
-static int cache_message(struct dm_target *ti, unsigned argc, char **argv,
-			 char *result, unsigned maxlen)
+static int cache_message(struct dm_target *ti, unsigned int argc, char **argv,
+			 char *result, unsigned int maxlen)
 {
 	struct cache *cache = ti->private;
 

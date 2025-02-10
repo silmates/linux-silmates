@@ -140,7 +140,10 @@ struct dmtimer {
 	u32 errata;
 	struct platform_device *pdev;
 	struct list_head node;
+	u32 late_attach;
 	struct notifier_block nb;
+	struct notifier_block fclk_nb;
+	unsigned long fclk_rate;
 };
 
 static u32 omap_reserved_systimers;
@@ -182,7 +185,7 @@ static inline u32 dmtimer_read(struct dmtimer *timer, u32 reg)
  * dmtimer_write - write timer registers in posted and non-posted mode
  * @timer:      timer pointer over which write operation is to perform
  * @reg:        lowest byte holds the register offset
- * @value:      data to write into the register
+ * @val:        data to write into the register
  *
  * The posted mode bit is encoded in reg. Note that in posted mode, the write
  * pending bit must be checked. Otherwise a write on a register which has a
@@ -254,8 +257,7 @@ static inline void __omap_dm_timer_enable_posted(struct dmtimer *timer)
 	timer->posted = OMAP_TIMER_POSTED;
 }
 
-static inline void __omap_dm_timer_stop(struct dmtimer *timer,
-					unsigned long rate)
+static inline void __omap_dm_timer_stop(struct dmtimer *timer)
 {
 	u32 l;
 
@@ -270,7 +272,7 @@ static inline void __omap_dm_timer_stop(struct dmtimer *timer,
 		 * Wait for functional clock period x 3.5 to make sure that
 		 * timer is stopped
 		 */
-		udelay(3500000 / rate + 1);
+		udelay(3500000 / timer->fclk_rate + 1);
 #endif
 	}
 
@@ -299,6 +301,14 @@ static inline void __omap_dm_timer_write_status(struct dmtimer *timer,
 
 static void omap_timer_restore_context(struct dmtimer *timer)
 {
+
+	/*
+	 * Do not restore the context during late attach. Kernel data
+	 * structure is not in sync with the register settings of the timer.
+	 */
+	if (timer->late_attach)
+		return;
+
 	dmtimer_write(timer, OMAP_TIMER_OCP_CFG_OFFSET, timer->context.ocp_cfg);
 
 	dmtimer_write(timer, OMAP_TIMER_WAKEUP_EN_REG, timer->context.twer);
@@ -347,6 +357,21 @@ static int omap_timer_context_notifier(struct notifier_block *nb,
 	}
 
 	return NOTIFY_OK;
+}
+
+static int omap_timer_fclk_notifier(struct notifier_block *nb,
+				    unsigned long event, void *data)
+{
+	struct clk_notifier_data *clk_data = data;
+	struct dmtimer *timer = container_of(nb, struct dmtimer, fclk_nb);
+
+	switch (event) {
+	case POST_RATE_CHANGE:
+		timer->fclk_rate = clk_data->new_rate;
+		return NOTIFY_OK;
+	default:
+		return NOTIFY_DONE;
+	}
 }
 
 static int omap_dm_timer_reset(struct dmtimer *timer)
@@ -447,6 +472,20 @@ static int omap_dm_timer_set_source(struct omap_dm_timer *cookie, int source)
 	clk_put(parent);
 
 	return ret;
+}
+
+static int omap_dm_timer_is_enabled(struct dmtimer *timer)
+{
+	u32 val;
+
+	val = dmtimer_read(timer, OMAP_TIMER_CTRL_REG);
+
+	/* Check if timer ST bit is set or the Counter register is loaded */
+	if (val & OMAP_TIMER_CTRL_ST ||
+	    dmtimer_read(timer, OMAP_TIMER_COUNTER_REG))
+		return 1;
+	else
+		return 0;
 }
 
 static void omap_dm_timer_enable(struct omap_dm_timer *cookie)
@@ -735,6 +774,15 @@ static int omap_dm_timer_start(struct omap_dm_timer *cookie)
 		dmtimer_write(timer, OMAP_TIMER_CTRL_REG, l);
 	}
 
+	/*
+	 * Now that timer has been started, call pm_runtime_put_noidle to
+	 * balance the pm_runtime device usage count to the proper value as
+	 * the regular case, and reset the late_attach flag.
+	 */
+	if (timer->late_attach)
+		pm_runtime_put_noidle(&timer->pdev->dev);
+	timer->late_attach = 0;
+
 	return 0;
 }
 
@@ -742,7 +790,6 @@ static int omap_dm_timer_stop(struct omap_dm_timer *cookie)
 {
 	struct dmtimer *timer;
 	struct device *dev;
-	unsigned long rate = 0;
 
 	timer = to_dmtimer(cookie);
 	if (unlikely(!timer))
@@ -750,10 +797,7 @@ static int omap_dm_timer_stop(struct omap_dm_timer *cookie)
 
 	dev = &timer->pdev->dev;
 
-	if (!timer->omap1)
-		rate = clk_get_rate(timer->fclk);
-
-	__omap_dm_timer_stop(timer, rate);
+	__omap_dm_timer_stop(timer);
 
 	pm_runtime_put_sync(dev);
 
@@ -775,8 +819,12 @@ static int omap_dm_timer_set_load(struct omap_dm_timer *cookie,
 	rc = pm_runtime_resume_and_get(dev);
 	if (rc)
 		return rc;
-
-	dmtimer_write(timer, OMAP_TIMER_LOAD_REG, load);
+	/*
+	 * If late attach is enabled, do not modify the dmtimer registers.
+	 * The registers would have been configured already.
+	 */
+	if (!timer->late_attach)
+		dmtimer_write(timer, OMAP_TIMER_LOAD_REG, load);
 
 	pm_runtime_put_sync(dev);
 
@@ -840,7 +888,8 @@ static int omap_dm_timer_set_pwm(struct omap_dm_timer *cookie, int def_on,
 	l |= trigger << 10;
 	if (autoreload)
 		l |= OMAP_TIMER_CTRL_AR;
-	dmtimer_write(timer, OMAP_TIMER_CTRL_REG, l);
+	if (!timer->late_attach)
+		dmtimer_write(timer, OMAP_TIMER_CTRL_REG, l);
 
 	pm_runtime_put_sync(dev);
 
@@ -925,7 +974,7 @@ static int omap_dm_timer_set_int_enable(struct omap_dm_timer *cookie,
 
 /**
  * omap_dm_timer_set_int_disable - disable timer interrupts
- * @timer:	pointer to timer handle
+ * @cookie:	pointer to timer cookie
  * @mask:	bit mask of interrupts to be disabled
  *
  * Disables the specified timer interrupts for a timer.
@@ -1112,6 +1161,14 @@ static int omap_dm_timer_probe(struct platform_device *pdev)
 		timer->fclk = devm_clk_get(dev, "fck");
 		if (IS_ERR(timer->fclk))
 			return PTR_ERR(timer->fclk);
+
+		timer->fclk_nb.notifier_call = omap_timer_fclk_notifier;
+		ret = devm_clk_notifier_register(dev, timer->fclk,
+						 &timer->fclk_nb);
+		if (ret)
+			return ret;
+
+		timer->fclk_rate = clk_get_rate(timer->fclk);
 	} else {
 		timer->fclk = ERR_PTR(-ENODEV);
 	}
@@ -1135,6 +1192,16 @@ static int omap_dm_timer_probe(struct platform_device *pdev)
 			goto err_disable;
 		}
 		__omap_dm_timer_init_regs(timer);
+
+		if (omap_dm_timer_is_enabled(timer))
+			timer->late_attach = 1;
+		/*
+		 * Increase the pm_runtime usage count and prevent kernel power
+		 * management from idling or disabling the timer.
+		 */
+		if (timer->late_attach)
+			pm_runtime_get_noresume(dev);
+
 		pm_runtime_put(dev);
 	}
 
@@ -1173,6 +1240,12 @@ static int omap_dm_timer_remove(struct platform_device *pdev)
 			if (!(timer->capability & OMAP_TIMER_ALWON))
 				cpu_pm_unregister_notifier(&timer->nb);
 			list_del(&timer->node);
+			/*
+			 * Reset device usage counter if late_attach is still
+			 * set
+			 */
+			if (timer->late_attach)
+				pm_runtime_put_noidle(&timer->pdev->dev);
 			ret = 0;
 			break;
 		}
@@ -1258,7 +1331,7 @@ static struct platform_driver omap_dm_timer_driver = {
 	.remove = omap_dm_timer_remove,
 	.driver = {
 		.name   = "omap_timer",
-		.of_match_table = of_match_ptr(omap_timer_match),
+		.of_match_table = omap_timer_match,
 		.pm = &omap_dm_timer_pm_ops,
 	},
 };

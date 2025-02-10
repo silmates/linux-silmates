@@ -348,6 +348,8 @@ void *vmw_bo_map_and_cache(struct vmw_buffer_object *vbo)
 	void *virtual;
 	int ret;
 
+	atomic_inc(&vbo->map_count);
+
 	virtual = ttm_kmap_obj_virtual(&vbo->map, &not_used);
 	if (virtual)
 		return virtual;
@@ -370,10 +372,17 @@ void *vmw_bo_map_and_cache(struct vmw_buffer_object *vbo)
  */
 void vmw_bo_unmap(struct vmw_buffer_object *vbo)
 {
+	int map_count;
+
 	if (vbo->map.bo == NULL)
 		return;
 
-	ttm_bo_kunmap(&vbo->map);
+	map_count = atomic_dec_return(&vbo->map_count);
+
+	if (!map_count) {
+		ttm_bo_kunmap(&vbo->map);
+		vbo->map.bo = NULL;
+	}
 }
 
 
@@ -462,6 +471,9 @@ int vmw_bo_create(struct vmw_private *vmw,
 		return -ENOMEM;
 	}
 
+	/*
+	 * vmw_bo_init will delete the *p_bo object if it fails
+	 */
 	ret = vmw_bo_init(vmw, *p_bo, size,
 			  placement, interruptible, pin,
 			  bo_free);
@@ -470,7 +482,6 @@ int vmw_bo_create(struct vmw_private *vmw,
 
 	return ret;
 out_error:
-	kfree(*p_bo);
 	*p_bo = NULL;
 	return ret;
 }
@@ -508,6 +519,7 @@ int vmw_bo_init(struct vmw_private *dev_priv,
 	BUILD_BUG_ON(TTM_MAX_BO_PRIORITY <= 3);
 	vmw_bo->base.priority = 3;
 	vmw_bo->res_tree = RB_ROOT;
+	atomic_set(&vmw_bo->map_count, 0);
 
 	size = ALIGN(size, PAGE_SIZE);
 	drm_gem_private_object_init(vdev, &vmw_bo->base.base, size);
@@ -593,7 +605,7 @@ static int vmw_user_bo_synccpu_release(struct drm_file *filp,
 		if (!(flags & drm_vmw_synccpu_allow_cs)) {
 			atomic_dec(&vmw_bo->cpu_writers);
 		}
-		ttm_bo_put(&vmw_bo->base);
+		vmw_user_bo_unref(&vmw_bo);
 	}
 
 	return ret;
@@ -635,7 +647,7 @@ int vmw_user_bo_synccpu_ioctl(struct drm_device *dev, void *data,
 			return ret;
 
 		ret = vmw_user_bo_synccpu_grab(vbo, arg->flags);
-		vmw_bo_unreference(&vbo);
+		vmw_user_bo_unref(&vbo);
 		if (unlikely(ret != 0)) {
 			if (ret == -ERESTARTSYS || ret == -EBUSY)
 				return -EBUSY;
@@ -693,7 +705,7 @@ int vmw_bo_unref_ioctl(struct drm_device *dev, void *data,
  * struct vmw_buffer_object should be placed.
  * Return: Zero on success, Negative error code on error.
  *
- * The vmw buffer object pointer will be refcounted.
+ * The vmw buffer object pointer will be refcounted (both ttm and gem)
  */
 int vmw_user_bo_lookup(struct drm_file *filp,
 		       uint32_t handle,
@@ -709,49 +721,9 @@ int vmw_user_bo_lookup(struct drm_file *filp,
 	}
 
 	*out = gem_to_vmw_bo(gobj);
-	ttm_bo_get(&(*out)->base);
-	drm_gem_object_put(gobj);
 
 	return 0;
 }
-
-/**
- * vmw_user_bo_noref_lookup - Look up a vmw user buffer object without reference
- * @filp: The TTM object file the handle is registered with.
- * @handle: The user buffer object handle.
- *
- * This function looks up a struct vmw_bo and returns a pointer to the
- * struct vmw_buffer_object it derives from without refcounting the pointer.
- * The returned pointer is only valid until vmw_user_bo_noref_release() is
- * called, and the object pointed to by the returned pointer may be doomed.
- * Any persistent usage of the object requires a refcount to be taken using
- * ttm_bo_reference_unless_doomed(). Iff this function returns successfully it
- * needs to be paired with vmw_user_bo_noref_release() and no sleeping-
- * or scheduling functions may be called in between these function calls.
- *
- * Return: A struct vmw_buffer_object pointer if successful or negative
- * error pointer on failure.
- */
-struct vmw_buffer_object *
-vmw_user_bo_noref_lookup(struct drm_file *filp, u32 handle)
-{
-	struct vmw_buffer_object *vmw_bo;
-	struct ttm_buffer_object *bo;
-	struct drm_gem_object *gobj = drm_gem_object_lookup(filp, handle);
-
-	if (!gobj) {
-		DRM_ERROR("Invalid buffer object handle 0x%08lx.\n",
-			  (unsigned long)handle);
-		return ERR_PTR(-ESRCH);
-	}
-	vmw_bo = gem_to_vmw_bo(gobj);
-	bo = ttm_bo_get_unless_zero(&vmw_bo->base);
-	vmw_bo = vmw_buffer_object(bo);
-	drm_gem_object_put(gobj);
-
-	return vmw_bo;
-}
-
 
 /**
  * vmw_bo_fence_single - Utility function to fence a single TTM buffer
@@ -815,7 +787,8 @@ int vmw_dumb_create(struct drm_file *file_priv,
 	ret = vmw_gem_object_create_with_handle(dev_priv, file_priv,
 						args->size, &args->handle,
 						&vbo);
-
+	/* drop reference from allocate - handle holds it now */
+	drm_gem_object_put(&vbo->base.base);
 	return ret;
 }
 

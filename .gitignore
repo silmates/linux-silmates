@@ -20,6 +20,7 @@
 *.dtb
 *.dtbo
 *.dtb.S
+*.dtbo.S
 *.dwo
 *.elf
 *.gcno
@@ -133,7 +134,6 @@ GTAGS
 # id-utils files
 ID
 
-*.orig
 *~
 \#*#
 

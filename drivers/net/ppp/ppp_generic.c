@@ -70,6 +70,7 @@
 #define MPHDRLEN_SSN	4	/* ditto with short sequence numbers */
 
 #define PPP_PROTO_LEN	2
+#define PPP_LCP_HDRLEN	4
 
 /*
  * An instance of /dev/ppp can be associated with either a ppp
@@ -480,7 +481,7 @@ static ssize_t ppp_read(struct file *file, char __user *buf,
 	ret = -EFAULT;
 	iov.iov_base = buf;
 	iov.iov_len = count;
-	iov_iter_init(&to, READ, &iov, 1, count);
+	iov_iter_init(&to, ITER_DEST, &iov, 1, count);
 	if (skb_copy_datagram_iter(skb, 0, &to, skb->len))
 		goto outf;
 	ret = skb->len;
@@ -489,6 +490,15 @@ static ssize_t ppp_read(struct file *file, char __user *buf,
 	kfree_skb(skb);
  out:
 	return ret;
+}
+
+static bool ppp_check_packet(struct sk_buff *skb, size_t count)
+{
+	/* LCP packets must include LCP header which 4 bytes long:
+	 * 1-byte code, 1-byte identifier, and 2-byte length.
+	 */
+	return get_unaligned_be16(skb->data) != PPP_LCP ||
+		count >= PPP_PROTO_LEN + PPP_LCP_HDRLEN;
 }
 
 static ssize_t ppp_write(struct file *file, const char __user *buf,
@@ -510,6 +520,11 @@ static ssize_t ppp_write(struct file *file, const char __user *buf,
 	skb_reserve(skb, pf->hdrlen);
 	ret = -EFAULT;
 	if (copy_from_user(skb_put(skb, count), buf, count)) {
+		kfree_skb(skb);
+		goto out;
+	}
+	ret = -EINVAL;
+	if (unlikely(!ppp_check_packet(skb, count))) {
 		kfree_skb(skb);
 		goto out;
 	}
@@ -1743,6 +1758,8 @@ ppp_send_frame(struct ppp *ppp, struct sk_buff *skb)
 	int len;
 	unsigned char *cp;
 
+	skb->dev = ppp->dev;
+
 	if (proto < 0x8000) {
 #ifdef CONFIG_PPP_FILTER
 		/* check if we should pass this packet */
@@ -2252,7 +2269,7 @@ static bool ppp_channel_bridge_input(struct channel *pch, struct sk_buff *skb)
 	if (!pchb)
 		goto out_rcu;
 
-	spin_lock(&pchb->downl);
+	spin_lock_bh(&pchb->downl);
 	if (!pchb->chan) {
 		/* channel got unregistered */
 		kfree_skb(skb);
@@ -2264,7 +2281,7 @@ static bool ppp_channel_bridge_input(struct channel *pch, struct sk_buff *skb)
 		kfree_skb(skb);
 
 outl:
-	spin_unlock(&pchb->downl);
+	spin_unlock_bh(&pchb->downl);
 out_rcu:
 	rcu_read_unlock();
 

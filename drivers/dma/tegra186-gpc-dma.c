@@ -707,6 +707,7 @@ static int tegra_dma_terminate_all(struct dma_chan *dc)
 			return err;
 		}
 
+		vchan_terminate_vdesc(&tdc->dma_desc->vd);
 		tegra_dma_disable(tdc);
 		tdc->dma_desc = NULL;
 	}
@@ -740,6 +741,9 @@ static int tegra_dma_get_residual(struct tegra_dma_channel *tdc)
 
 	bytes_xfer = dma_desc->bytes_xfer +
 		     sg_req[dma_desc->sg_idx].len - (wcount * 4);
+
+	if (dma_desc->bytes_req == bytes_xfer)
+		return 0;
 
 	residual = dma_desc->bytes_req - (bytes_xfer % dma_desc->bytes_req);
 

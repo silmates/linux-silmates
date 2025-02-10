@@ -588,15 +588,13 @@ static int dp83869_of_init(struct phy_device *phydev)
 						       &dp83869_internal_delay[0],
 						       delay_size, true);
 	if (dp83869->rx_int_delay < 0)
-		dp83869->rx_int_delay =
-				dp83869_internal_delay[DP83869_CLK_DELAY_DEF];
+		dp83869->rx_int_delay = DP83869_CLK_DELAY_DEF;
 
 	dp83869->tx_int_delay = phy_get_internal_delay(phydev, dev,
 						       &dp83869_internal_delay[0],
 						       delay_size, false);
 	if (dp83869->tx_int_delay < 0)
-		dp83869->tx_int_delay =
-				dp83869_internal_delay[DP83869_CLK_DELAY_DEF];
+		dp83869->tx_int_delay = DP83869_CLK_DELAY_DEF;
 
 	return ret;
 }
@@ -647,7 +645,6 @@ static int dp83869_configure_fiber(struct phy_device *phydev,
 		     phydev->supported);
 
 	linkmode_set_bit(ETHTOOL_LINK_MODE_FIBRE_BIT, phydev->supported);
-	linkmode_set_bit(ADVERTISED_FIBRE, phydev->advertising);
 
 	if (dp83869->mode == DP83869_RGMII_1000_BASE) {
 		linkmode_set_bit(ETHTOOL_LINK_MODE_1000baseX_Full_BIT,
@@ -694,8 +691,20 @@ static int dp83869_configure_mode(struct phy_device *phydev,
 	/* Below init sequence for each operational mode is defined in
 	 * section 9.4.8 of the datasheet.
 	 */
+	phy_ctrl_val = dp83869->mode;
+	if (phydev->interface == PHY_INTERFACE_MODE_MII) {
+		if (dp83869->mode == DP83869_100M_MEDIA_CONVERT ||
+		    dp83869->mode == DP83869_RGMII_100_BASE ||
+		    dp83869->mode == DP83869_RGMII_COPPER_ETHERNET) {
+			phy_ctrl_val |= DP83869_OP_MODE_MII;
+		} else {
+			phydev_err(phydev, "selected op-mode is not valid with MII mode\n");
+			return -EINVAL;
+		}
+	}
+
 	ret = phy_write_mmd(phydev, DP83869_DEVADDR, DP83869_OP_MODE,
-			    dp83869->mode);
+			    phy_ctrl_val);
 	if (ret)
 		return ret;
 

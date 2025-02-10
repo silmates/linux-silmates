@@ -268,13 +268,9 @@ static void tegra210_sdhci_writew(struct sdhci_host *host, u16 val, int reg)
 {
 	bool is_tuning_cmd = 0;
 	bool clk_enabled;
-	u8 cmd;
 
-	if (reg == SDHCI_COMMAND) {
-		cmd = SDHCI_GET_CMD(val);
-		is_tuning_cmd = cmd == MMC_SEND_TUNING_BLOCK ||
-				cmd == MMC_SEND_TUNING_BLOCK_HS200;
-	}
+	if (reg == SDHCI_COMMAND)
+		is_tuning_cmd = mmc_op_tuning(SDHCI_GET_CMD(val));
 
 	if (is_tuning_cmd)
 		clk_enabled = tegra_sdhci_configure_card_clk(host, 0);
@@ -1526,7 +1522,8 @@ static const struct sdhci_pltfm_data sdhci_tegra186_pdata = {
 		  SDHCI_QUIRK_NO_HISPD_BIT |
 		  SDHCI_QUIRK_BROKEN_ADMA_ZEROLEN_DESC |
 		  SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
-	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
+	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
+		   SDHCI_QUIRK2_ISSUE_CMD_DAT_RESET_TOGETHER,
 	.ops  = &tegra186_sdhci_ops,
 };
 

@@ -3418,6 +3418,7 @@ bool dml32_CalculatePrefetchSchedule(
 		unsigned int SwathHeightC,
 		double TWait,
 		double TPreReq,
+		bool ExtendPrefetchIfPossible,
 		/* Output */
 		double   *DSTXAfterScaler,
 		double   *DSTYAfterScaler,
@@ -3454,6 +3455,7 @@ bool dml32_CalculatePrefetchSchedule(
 	double TimeForFetchingMetaPTE = 0;
 	double TimeForFetchingRowInVBlank = 0;
 	double LinesToRequestPrefetchPixelData = 0;
+	double LinesForPrefetchBandwidth = 0;
 	unsigned int HostVMDynamicLevelsTrips;
 	double  trip_to_mem;
 	double  Tvm_trips;
@@ -3883,11 +3885,35 @@ bool dml32_CalculatePrefetchSchedule(
 			TimeForFetchingMetaPTE = Tvm_oto;
 			TimeForFetchingRowInVBlank = Tr0_oto;
 			*PrefetchBandwidth = prefetch_bw_oto;
+			/* Clamp to oto for bandwidth calculation */
+			LinesForPrefetchBandwidth = dst_y_prefetch_oto;
 		} else {
-			*DestinationLinesForPrefetch = dst_y_prefetch_equ;
-			TimeForFetchingMetaPTE = Tvm_equ;
-			TimeForFetchingRowInVBlank = Tr0_equ;
-			*PrefetchBandwidth = prefetch_bw_equ;
+			/* For mode programming we want to extend the prefetch as much as possible
+			 * (up to oto, or as long as we can for equ) if we're not already applying
+			 * the 60us prefetch requirement. This is to avoid intermittent underflow
+			 * issues during prefetch.
+			 *
+			 * The prefetch extension is applied under the following scenarios:
+			 * 1. We're in prefetch mode > 0 (i.e. we don't support MCLK switch in blank)
+			 * 2. We're using subvp or drr methods of p-state switch, in which case we
+			 *    we don't care if prefetch takes up more of the blanking time
+			 *
+			 * Mode programming typically chooses the smallest prefetch time possible
+			 * (i.e. highest bandwidth during prefetch) presumably to create margin between
+			 * p-states / c-states that happen in vblank and prefetch. Therefore we only
+			 * apply this prefetch extension when p-state in vblank is not required (UCLK
+			 * p-states take up the most vblank time).
+			 */
+			if (ExtendPrefetchIfPossible && TPreReq == 0 && VStartup < MaxVStartup) {
+				MyError = true;
+			} else {
+				*DestinationLinesForPrefetch = dst_y_prefetch_equ;
+				TimeForFetchingMetaPTE = Tvm_equ;
+				TimeForFetchingRowInVBlank = Tr0_equ;
+				*PrefetchBandwidth = prefetch_bw_equ;
+				/* Clamp to equ for bandwidth calculation */
+				LinesForPrefetchBandwidth = dst_y_prefetch_equ;
+			}
 		}
 
 		*DestinationLinesToRequestVMInVBlank = dml_ceil(4.0 * TimeForFetchingMetaPTE / LineTime, 1.0) / 4.0;
@@ -3895,7 +3921,7 @@ bool dml32_CalculatePrefetchSchedule(
 		*DestinationLinesToRequestRowInVBlank =
 				dml_ceil(4.0 * TimeForFetchingRowInVBlank / LineTime, 1.0) / 4.0;
 
-		LinesToRequestPrefetchPixelData = *DestinationLinesForPrefetch -
+		LinesToRequestPrefetchPixelData = LinesForPrefetchBandwidth -
 				*DestinationLinesToRequestVMInVBlank - 2 * *DestinationLinesToRequestRowInVBlank;
 
 #ifdef __DML_VBA_DEBUG__
@@ -6227,4 +6253,73 @@ void dml32_CalculateImmediateFlipBandwithSupport(unsigned int NumberOfActiveSurf
 	}
 	*ImmediateFlipBandwidthSupport = (*TotalBandwidth <= ReturnBW);
 	*FractionOfUrgentBandwidth = *TotalBandwidth / ReturnBW;
+}
+
+bool dml32_CalculateDETSwathFillLatencyHiding(unsigned int NumberOfActiveSurfaces,
+		double ReturnBW,
+		double UrgentLatency,
+		unsigned int SwathHeightY[],
+		unsigned int SwathHeightC[],
+		unsigned int SwathWidthY[],
+		unsigned int SwathWidthC[],
+		double  BytePerPixelInDETY[],
+		double  BytePerPixelInDETC[],
+		unsigned int    DETBufferSizeY[],
+		unsigned int    DETBufferSizeC[],
+		unsigned int	NumOfDPP[],
+		unsigned int	HTotal[],
+		double	PixelClock[],
+		double	VRatioY[],
+		double	VRatioC[],
+		enum dm_use_mall_for_pstate_change_mode UsesMALLForPStateChange[DC__NUM_DPP__MAX])
+{
+	int k;
+	double SwathSizeAllSurfaces = 0;
+	double SwathSizeAllSurfacesInFetchTimeUs;
+	double DETSwathLatencyHidingUs;
+	double DETSwathLatencyHidingYUs;
+	double DETSwathLatencyHidingCUs;
+	double SwathSizePerSurfaceY[DC__NUM_DPP__MAX];
+	double SwathSizePerSurfaceC[DC__NUM_DPP__MAX];
+	bool NotEnoughDETSwathFillLatencyHiding = false;
+
+	/* calculate sum of single swath size for all pipes in bytes */
+	for (k = 0; k < NumberOfActiveSurfaces; k++) {
+		SwathSizePerSurfaceY[k] = SwathHeightY[k] * SwathWidthY[k] * BytePerPixelInDETY[k] * NumOfDPP[k];
+
+		if (SwathHeightC[k] != 0)
+			SwathSizePerSurfaceC[k] = SwathHeightC[k] * SwathWidthC[k] * BytePerPixelInDETC[k] * NumOfDPP[k];
+		else
+			SwathSizePerSurfaceC[k] = 0;
+
+		SwathSizeAllSurfaces += SwathSizePerSurfaceY[k] + SwathSizePerSurfaceC[k];
+	}
+
+	SwathSizeAllSurfacesInFetchTimeUs = SwathSizeAllSurfaces / ReturnBW + UrgentLatency;
+
+	/* ensure all DET - 1 swath can hide a fetch for all surfaces */
+	for (k = 0; k < NumberOfActiveSurfaces; k++) {
+		double LineTime = HTotal[k] / PixelClock[k];
+
+		/* only care if surface is not phantom */
+		if (UsesMALLForPStateChange[k] != dm_use_mall_pstate_change_phantom_pipe) {
+			DETSwathLatencyHidingYUs = (dml_floor(DETBufferSizeY[k] / BytePerPixelInDETY[k] / SwathWidthY[k], 1.0) - SwathHeightY[k]) / VRatioY[k] * LineTime;
+
+			if (SwathHeightC[k] != 0) {
+				DETSwathLatencyHidingCUs = (dml_floor(DETBufferSizeC[k] / BytePerPixelInDETC[k] / SwathWidthC[k], 1.0) - SwathHeightC[k]) / VRatioC[k] * LineTime;
+
+				DETSwathLatencyHidingUs = dml_min(DETSwathLatencyHidingYUs, DETSwathLatencyHidingCUs);
+			} else {
+				DETSwathLatencyHidingUs = DETSwathLatencyHidingYUs;
+			}
+
+			/* DET must be able to hide time to fetch 1 swath for each surface */
+			if (DETSwathLatencyHidingUs < SwathSizeAllSurfacesInFetchTimeUs) {
+				NotEnoughDETSwathFillLatencyHiding = true;
+				break;
+			}
+		}
+	}
+
+	return NotEnoughDETSwathFillLatencyHiding;
 }

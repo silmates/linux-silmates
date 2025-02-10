@@ -191,7 +191,7 @@ struct drm_bridge_funcs {
 	 * or &drm_encoder_helper_funcs.dpms hook.
 	 *
 	 * The bridge must assume that the display pipe (i.e. clocks and timing
-	 * singals) feeding it is no longer running when this callback is
+	 * signals) feeding it is no longer running when this callback is
 	 * called.
 	 *
 	 * The @post_disable callback is optional.
@@ -202,6 +202,20 @@ struct drm_bridge_funcs {
 	 * New drivers shall use &drm_bridge_funcs.atomic_post_disable.
 	 */
 	void (*post_disable)(struct drm_bridge *bridge);
+
+	/**
+	 * @late_disable:
+	 *
+	 * This callback should disable the bridge. It is called right after the
+	 * preceding element in the display pipe is disabled. If the preceding
+	 * element is a bridge this means it's called after that bridge's
+	 * @atomic_post_disable. If the preceding element is a &drm_crtc it's
+	 * called right after the crtc's &drm_crtc_helper_funcs.atomic_disable
+	 * hook.
+	 *
+	 * The @elate_disable callback is optional.
+	 */
+	void (*late_disable)(struct drm_bridge *bridge);
 
 	/**
 	 * @mode_set:
@@ -232,6 +246,26 @@ struct drm_bridge_funcs {
 	void (*mode_set)(struct drm_bridge *bridge,
 			 const struct drm_display_mode *mode,
 			 const struct drm_display_mode *adjusted_mode);
+
+	/**
+	 * @early_enable:
+	 *
+	 * This callback should enable the bridge. It is called right before
+	 * the preceding element in the display pipe is enabled. If the
+	 * preceding element is a bridge this means it's called before that
+	 * bridge's @atomic_early_enable. If the preceding element is a
+	 * &drm_crtc it's called right before the crtc's
+	 * &drm_crtc_helper_funcs.atomic_enable hook.
+	 *
+	 * The display pipe (i.e. clocks and timing signals) feeding this bridge
+	 * will not yet be running when this callback is called. The bridge can
+	 * enable the display link feeding the next bridge in the chain (if
+	 * there is one) when this callback is called.
+	 *
+	 * The @early_enable callback is optional.
+	 */
+	void (*early_enable)(struct drm_bridge *bridge);
+
 	/**
 	 * @pre_enable:
 	 *
@@ -281,6 +315,26 @@ struct drm_bridge_funcs {
 	 * New drivers shall use &drm_bridge_funcs.atomic_enable.
 	 */
 	void (*enable)(struct drm_bridge *bridge);
+
+	/**
+	 * @early_enable:
+	 *
+	 * This callback should enable the bridge. It is called right before
+	 * the preceding element in the display pipe is enabled. If the
+	 * preceding element is a bridge this means it's called before that
+	 * bridge's @atomic_early_enable. If the preceding element is a
+	 * &drm_crtc it's called right before the crtc's
+	 * &drm_crtc_helper_funcs.atomic_enable hook.
+	 *
+	 * The display pipe (i.e. clocks and timing signals) feeding this bridge
+	 * will not yet be running when this callback is called. The bridge can
+	 * enable the display link feeding the next bridge in the chain (if
+	 * there is one) when this callback is called.
+	 *
+	 * The @early_enable callback is optional.
+	 */
+	void (*atomic_early_enable)(struct drm_bridge *bridge,
+				    struct drm_bridge_state *old_bridge_state);
 
 	/**
 	 * @atomic_pre_enable:
@@ -383,6 +437,21 @@ struct drm_bridge_funcs {
 				    struct drm_bridge_state *old_bridge_state);
 
 	/**
+	 * @late_disable:
+	 *
+	 * This callback should disable the bridge. It is called right after the
+	 * preceding element in the display pipe is disabled. If the preceding
+	 * element is a bridge this means it's called after that bridge's
+	 * @atomic_post_disable. If the preceding element is a &drm_crtc it's
+	 * called right after the crtc's &drm_crtc_helper_funcs.atomic_disable
+	 * hook.
+	 *
+	 * The @elate_disable callback is optional.
+	 */
+	void (*atomic_late_disable)(struct drm_bridge *bridge,
+				    struct drm_bridge_state *old_bridge_state);
+
+	/**
 	 * @atomic_duplicate_state:
 	 *
 	 * Duplicate the current bridge state object (which is guaranteed to be
@@ -447,11 +516,11 @@ struct drm_bridge_funcs {
 	 *
 	 * The returned array must be allocated with kmalloc() and will be
 	 * freed by the caller. If the allocation fails, NULL should be
-	 * returned. num_output_fmts must be set to the returned array size.
+	 * returned. num_input_fmts must be set to the returned array size.
 	 * Formats listed in the returned array should be listed in decreasing
 	 * preference order (the core will try all formats until it finds one
 	 * that works). When the format is not supported NULL should be
-	 * returned and num_output_fmts should be set to 0.
+	 * returned and num_input_fmts should be set to 0.
 	 *
 	 * This method is called on all elements of the bridge chain as part of
 	 * the bus format negotiation process that happens in
@@ -769,6 +838,14 @@ struct drm_bridge {
 	 */
 	bool interlace_allowed;
 	/**
+	 * @pre_enable_prev_first: The bridge requires that the prev
+	 * bridge @pre_enable function is called before its @pre_enable,
+	 * and conversely for post_disable. This is most frequently a
+	 * requirement for DSI devices which need the host to be initialised
+	 * before the peripheral.
+	 */
+	bool pre_enable_prev_first;
+	/**
 	 * @ddc: Associated I2C adapter for DDC access, if any.
 	 */
 	struct i2c_adapter *ddc;
@@ -890,6 +967,10 @@ int drm_atomic_bridge_chain_check(struct drm_bridge *bridge,
 void drm_atomic_bridge_chain_disable(struct drm_bridge *bridge,
 				     struct drm_atomic_state *state);
 void drm_atomic_bridge_chain_post_disable(struct drm_bridge *bridge,
+					  struct drm_atomic_state *state);
+void drm_atomic_bridge_chain_late_disable(struct drm_bridge *bridge,
+					  struct drm_atomic_state *state);
+void drm_atomic_bridge_chain_early_enable(struct drm_bridge *bridge,
 					  struct drm_atomic_state *state);
 void drm_atomic_bridge_chain_pre_enable(struct drm_bridge *bridge,
 					struct drm_atomic_state *state);

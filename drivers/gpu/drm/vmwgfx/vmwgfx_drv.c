@@ -25,13 +25,17 @@
  *
  **************************************************************************/
 
-#include <linux/dma-mapping.h>
-#include <linux/module.h>
-#include <linux/pci.h>
-#include <linux/cc_platform.h>
+
+#include "vmwgfx_drv.h"
+
+#include "vmwgfx_devcaps.h"
+#include "vmwgfx_mksstat.h"
+#include "vmwgfx_binding.h"
+#include "ttm_object.h"
 
 #include <drm/drm_aperture.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_fb_helper.h>
 #include <drm/drm_gem_ttm_helper.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_module.h>
@@ -41,16 +45,13 @@
 #include <drm/ttm/ttm_placement.h>
 #include <generated/utsrelease.h>
 
-#include "ttm_object.h"
-#include "vmwgfx_binding.h"
-#include "vmwgfx_devcaps.h"
-#include "vmwgfx_drv.h"
-#include "vmwgfx_mksstat.h"
+#include <linux/cc_platform.h>
+#include <linux/dma-mapping.h>
+#include <linux/module.h>
+#include <linux/pci.h>
+#include <linux/version.h>
 
 #define VMWGFX_DRIVER_DESC "Linux drm driver for VMware graphics devices"
-
-#define VMW_MIN_INITIAL_WIDTH 800
-#define VMW_MIN_INITIAL_HEIGHT 600
 
 /*
  * Fully encoded drm commands. Might move to vmw_drm.h
@@ -262,7 +263,6 @@ static const struct pci_device_id vmw_pci_id_list[] = {
 };
 MODULE_DEVICE_TABLE(pci, vmw_pci_id_list);
 
-static int enable_fbdev = IS_ENABLED(CONFIG_DRM_VMWGFX_FBCON);
 static int vmw_restrict_iommu;
 static int vmw_force_coherent;
 static int vmw_restrict_dma_mask;
@@ -272,8 +272,6 @@ static int vmw_probe(struct pci_dev *, const struct pci_device_id *);
 static int vmwgfx_pm_notifier(struct notifier_block *nb, unsigned long val,
 			      void *ptr);
 
-MODULE_PARM_DESC(enable_fbdev, "Enable vmwgfx fbdev");
-module_param_named(enable_fbdev, enable_fbdev, int, 0600);
 MODULE_PARM_DESC(restrict_iommu, "Try to limit IOMMU usage for TTM pages");
 module_param_named(restrict_iommu, vmw_restrict_iommu, int, 0600);
 MODULE_PARM_DESC(force_coherent, "Force coherent TTM pages");
@@ -623,8 +621,8 @@ static void vmw_get_initial_size(struct vmw_private *dev_priv)
 	width = vmw_read(dev_priv, SVGA_REG_WIDTH);
 	height = vmw_read(dev_priv, SVGA_REG_HEIGHT);
 
-	width = max_t(uint32_t, width, VMW_MIN_INITIAL_WIDTH);
-	height = max_t(uint32_t, height, VMW_MIN_INITIAL_HEIGHT);
+	width = max_t(uint32_t, width, VMWGFX_MIN_INITIAL_WIDTH);
+	height = max_t(uint32_t, height, VMWGFX_MIN_INITIAL_HEIGHT);
 
 	if (width > dev_priv->fb_max_width ||
 	    height > dev_priv->fb_max_height) {
@@ -633,8 +631,8 @@ static void vmw_get_initial_size(struct vmw_private *dev_priv)
 		 * This is a host error and shouldn't occur.
 		 */
 
-		width = VMW_MIN_INITIAL_WIDTH;
-		height = VMW_MIN_INITIAL_HEIGHT;
+		width  = VMWGFX_MIN_INITIAL_WIDTH;
+		height = VMWGFX_MIN_INITIAL_HEIGHT;
 	}
 
 	dev_priv->initial_width = width;
@@ -660,11 +658,12 @@ static int vmw_dma_select_mode(struct vmw_private *dev_priv)
 		[vmw_dma_map_populate] = "Caching DMA mappings.",
 		[vmw_dma_map_bind] = "Giving up DMA mappings early."};
 
-	/* TTM currently doesn't fully support SEV encryption. */
-	if (cc_platform_has(CC_ATTR_MEM_ENCRYPT))
-		return -EINVAL;
-
-	if (vmw_force_coherent)
+	/*
+	 * When running with SEV we always want dma mappings, because
+	 * otherwise ttm tt pool pages will bounce through swiotlb running
+	 * out of available space.
+	 */
+	if (vmw_force_coherent || cc_platform_has(CC_ATTR_MEM_ENCRYPT))
 		dev_priv->map_mode = vmw_dma_alloc_coherent;
 	else if (vmw_restrict_iommu)
 		dev_priv->map_mode = vmw_dma_map_bind;
@@ -806,6 +805,43 @@ static int vmw_detect_version(struct vmw_private *dev)
 	return 0;
 }
 
+static void vmw_write_driver_id(struct vmw_private *dev)
+{
+	if ((dev->capabilities2 & SVGA_CAP2_DX2) != 0) {
+		vmw_write(dev,  SVGA_REG_GUEST_DRIVER_ID,
+			  SVGA_REG_GUEST_DRIVER_ID_LINUX);
+
+		vmw_write(dev, SVGA_REG_GUEST_DRIVER_VERSION1,
+			  LINUX_VERSION_MAJOR << 24 |
+			  LINUX_VERSION_PATCHLEVEL << 16 |
+			  LINUX_VERSION_SUBLEVEL);
+		vmw_write(dev, SVGA_REG_GUEST_DRIVER_VERSION2,
+			  VMWGFX_DRIVER_MAJOR << 24 |
+			  VMWGFX_DRIVER_MINOR << 16 |
+			  VMWGFX_DRIVER_PATCHLEVEL);
+		vmw_write(dev, SVGA_REG_GUEST_DRIVER_VERSION3, 0);
+
+		vmw_write(dev, SVGA_REG_GUEST_DRIVER_ID,
+			  SVGA_REG_GUEST_DRIVER_ID_SUBMIT);
+	}
+}
+
+static void vmw_sw_context_init(struct vmw_private *dev_priv)
+{
+	struct vmw_sw_context *sw_context = &dev_priv->ctx;
+
+	hash_init(sw_context->res_ht);
+}
+
+static void vmw_sw_context_fini(struct vmw_private *dev_priv)
+{
+	struct vmw_sw_context *sw_context = &dev_priv->ctx;
+
+	vfree(sw_context->cmd_bounce);
+	if (sw_context->staged_bindings)
+		vmw_binding_state_free(sw_context->staged_bindings);
+}
+
 static int vmw_driver_load(struct vmw_private *dev_priv, u32 pci_id)
 {
 	int ret;
@@ -814,6 +850,8 @@ static int vmw_driver_load(struct vmw_private *dev_priv, u32 pci_id)
 	struct pci_dev *pdev = to_pci_dev(dev_priv->drm.dev);
 
 	dev_priv->drm.dev_private = dev_priv;
+
+	vmw_sw_context_init(dev_priv);
 
 	mutex_init(&dev_priv->cmdbuf_mutex);
 	mutex_init(&dev_priv->binding_mutex);
@@ -843,9 +881,6 @@ static int vmw_driver_load(struct vmw_private *dev_priv, u32 pci_id)
 	dev_priv->used_memory_size = 0;
 
 	dev_priv->assume_16bpp = !!vmw_assume_16bpp;
-
-	dev_priv->enable_fb = enable_fbdev;
-
 
 	dev_priv->capabilities = vmw_read(dev_priv, SVGA_REG_CAPABILITIES);
 	vmw_print_bitmap(&dev_priv->drm, "Capabilities",
@@ -902,13 +937,6 @@ static int vmw_driver_load(struct vmw_private *dev_priv, u32 pci_id)
 			mem_size =
 				vmw_read(dev_priv,
 					 SVGA_REG_SUGGESTED_GBOBJECT_MEM_SIZE_KB);
-
-		/*
-		 * Workaround for low memory 2D VMs to compensate for the
-		 * allocation taken by fbdev
-		 */
-		if (!(dev_priv->capabilities & SVGA_CAP_3D))
-			mem_size *= 3;
 
 		dev_priv->max_mob_pages = mem_size * 1024 / PAGE_SIZE;
 		dev_priv->max_primary_mem =
@@ -970,7 +998,7 @@ static int vmw_driver_load(struct vmw_private *dev_priv, u32 pci_id)
 		goto out_err0;
 	}
 
-	dev_priv->tdev = ttm_object_device_init(12, &vmw_prime_dmabuf_ops);
+	dev_priv->tdev = ttm_object_device_init(&vmw_prime_dmabuf_ops);
 
 	if (unlikely(dev_priv->tdev == NULL)) {
 		drm_err(&dev_priv->drm,
@@ -1091,12 +1119,7 @@ static int vmw_driver_load(struct vmw_private *dev_priv, u32 pci_id)
 	vmw_host_printf("vmwgfx: Module Version: %d.%d.%d (kernel: %s)",
 			VMWGFX_DRIVER_MAJOR, VMWGFX_DRIVER_MINOR,
 			VMWGFX_DRIVER_PATCHLEVEL, UTS_RELEASE);
-
-	if (dev_priv->enable_fb) {
-		vmw_fifo_resource_inc(dev_priv);
-		vmw_svga_enable(dev_priv);
-		vmw_fb_init(dev_priv);
-	}
+	vmw_write_driver_id(dev_priv);
 
 	dev_priv->pm_nb.notifier_call = vmwgfx_pm_notifier;
 	register_pm_notifier(&dev_priv->pm_nb);
@@ -1143,15 +1166,10 @@ static void vmw_driver_unload(struct drm_device *dev)
 
 	unregister_pm_notifier(&dev_priv->pm_nb);
 
-	if (dev_priv->ctx.res_ht_initialized)
-		vmwgfx_ht_remove(&dev_priv->ctx.res_ht);
-	vfree(dev_priv->ctx.cmd_bounce);
-	if (dev_priv->enable_fb) {
-		vmw_fb_off(dev_priv);
-		vmw_fb_close(dev_priv);
-		vmw_fifo_resource_dec(dev_priv);
-		vmw_svga_disable(dev_priv);
-	}
+	vmw_sw_context_fini(dev_priv);
+	vmw_fifo_resource_dec(dev_priv);
+
+	vmw_svga_disable(dev_priv);
 
 	vmw_kms_close(dev_priv);
 	vmw_overlay_close(dev_priv);
@@ -1173,8 +1191,6 @@ static void vmw_driver_unload(struct drm_device *dev)
 		vmw_irq_uninstall(&dev_priv->drm);
 
 	ttm_object_device_release(&dev_priv->tdev);
-	if (dev_priv->ctx.staged_bindings)
-		vmw_binding_state_free(dev_priv->ctx.staged_bindings);
 
 	for (i = vmw_res_context; i < vmw_res_max; ++i)
 		idr_destroy(&dev_priv->res_idr[i]);
@@ -1203,7 +1219,7 @@ static int vmw_driver_open(struct drm_device *dev, struct drm_file *file_priv)
 	if (unlikely(!vmw_fp))
 		return ret;
 
-	vmw_fp->tfile = ttm_object_file_init(dev_priv->tdev, 10);
+	vmw_fp->tfile = ttm_object_file_init(dev_priv->tdev);
 	if (unlikely(vmw_fp->tfile == NULL))
 		goto out_no_tfile;
 
@@ -1291,8 +1307,6 @@ static void vmw_master_drop(struct drm_device *dev,
 	struct vmw_private *dev_priv = vmw_priv(dev);
 
 	vmw_kms_legacy_hotspot_clear(dev_priv);
-	if (!dev_priv->enable_fb)
-		vmw_svga_disable(dev_priv);
 }
 
 /**
@@ -1390,12 +1404,15 @@ static void vmw_debugfs_resource_managers_init(struct vmw_private *vmw)
 					    root, "system_ttm");
 	ttm_resource_manager_create_debugfs(ttm_manager_type(&vmw->bdev, TTM_PL_VRAM),
 					    root, "vram_ttm");
-	ttm_resource_manager_create_debugfs(ttm_manager_type(&vmw->bdev, VMW_PL_GMR),
-					    root, "gmr_ttm");
-	ttm_resource_manager_create_debugfs(ttm_manager_type(&vmw->bdev, VMW_PL_MOB),
-					    root, "mob_ttm");
-	ttm_resource_manager_create_debugfs(ttm_manager_type(&vmw->bdev, VMW_PL_SYSTEM),
-					    root, "system_mob_ttm");
+	if (vmw->has_gmr)
+		ttm_resource_manager_create_debugfs(ttm_manager_type(&vmw->bdev, VMW_PL_GMR),
+						    root, "gmr_ttm");
+	if (vmw->has_mob) {
+		ttm_resource_manager_create_debugfs(ttm_manager_type(&vmw->bdev, VMW_PL_MOB),
+						    root, "mob_ttm");
+		ttm_resource_manager_create_debugfs(ttm_manager_type(&vmw->bdev, VMW_PL_SYSTEM),
+						    root, "system_mob_ttm");
+	}
 }
 
 static int vmwgfx_pm_notifier(struct notifier_block *nb, unsigned long val,
@@ -1485,25 +1502,19 @@ static int vmw_pm_freeze(struct device *kdev)
 		DRM_ERROR("Failed to freeze modesetting.\n");
 		return ret;
 	}
-	if (dev_priv->enable_fb)
-		vmw_fb_off(dev_priv);
 
 	vmw_execbuf_release_pinned_bo(dev_priv);
 	vmw_resource_evict_all(dev_priv);
 	vmw_release_device_early(dev_priv);
 	while (ttm_device_swapout(&dev_priv->bdev, &ctx, GFP_KERNEL) > 0);
-	if (dev_priv->enable_fb)
-		vmw_fifo_resource_dec(dev_priv);
+	vmw_fifo_resource_dec(dev_priv);
 	if (atomic_read(&dev_priv->num_fifo_resources) != 0) {
 		DRM_ERROR("Can't hibernate while 3D resources are active.\n");
-		if (dev_priv->enable_fb)
-			vmw_fifo_resource_inc(dev_priv);
+		vmw_fifo_resource_inc(dev_priv);
 		WARN_ON(vmw_request_device_late(dev_priv));
 		dev_priv->suspend_locked = false;
 		if (dev_priv->suspend_state)
 			vmw_kms_resume(dev);
-		if (dev_priv->enable_fb)
-			vmw_fb_on(dev_priv);
 		return -EBUSY;
 	}
 
@@ -1523,23 +1534,18 @@ static int vmw_pm_restore(struct device *kdev)
 
 	vmw_detect_version(dev_priv);
 
-	if (dev_priv->enable_fb)
-		vmw_fifo_resource_inc(dev_priv);
+	vmw_fifo_resource_inc(dev_priv);
 
 	ret = vmw_request_device(dev_priv);
 	if (ret)
 		return ret;
 
-	if (dev_priv->enable_fb)
-		__vmw_svga_enable(dev_priv);
+	__vmw_svga_enable(dev_priv);
 
 	vmw_fence_fifo_up(dev_priv->fman);
 	dev_priv->suspend_locked = false;
 	if (dev_priv->suspend_state)
 		vmw_kms_resume(&dev_priv->drm);
-
-	if (dev_priv->enable_fb)
-		vmw_fb_on(dev_priv);
 
 	return 0;
 }
@@ -1630,6 +1636,10 @@ static int vmw_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	ret = drm_dev_register(&vmw->drm, 0);
 	if (ret)
 		goto out_unload;
+
+	vmw_fifo_resource_inc(vmw);
+	vmw_svga_enable(vmw);
+	drm_fbdev_generic_setup(&vmw->drm,  0);
 
 	vmw_debugfs_gem_init(vmw);
 	vmw_debugfs_resource_managers_init(vmw);

@@ -19,6 +19,9 @@
 #include <linux/of.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
+#include <linux/cpufreq.h>
+#include <linux/cpumask.h>
+#include <linux/cpu_cooling.h>
 
 #define K3_VTM_DEVINFO_PWR0_OFFSET		0x4
 #define K3_VTM_DEVINFO_PWR0_TEMPSENS_CT_MASK	0xf0
@@ -177,16 +180,34 @@ struct k3_j72xx_bandgap {
 	struct device *dev;
 	void __iomem *base;
 	void __iomem *cfg2_base;
-	void __iomem *fuse_base;
 	struct k3_thermal_data *ts_data[K3_VTM_MAX_NUM_TS];
+	int cnt;
 };
 
 /* common data structures */
 struct k3_thermal_data {
 	struct k3_j72xx_bandgap *bgp;
+	struct cpufreq_policy *policy;
+	struct thermal_zone_device *ti_thermal;
+	struct thermal_cooling_device *cool_dev;
+	struct work_struct thermal_wq;
 	u32 ctrl_offset;
 	u32 stat_offset;
+	enum thermal_device_mode mode;
+	int prev_temp;
+	int sensor_id;
 };
+
+static void k3_thermal_work(struct work_struct *work)
+{
+	struct k3_thermal_data *data = container_of(work,
+					struct k3_thermal_data, thermal_wq);
+
+	thermal_zone_device_update(data->ti_thermal, THERMAL_EVENT_UNSPECIFIED);
+
+	dev_info(&data->ti_thermal->device, "updated thermal zone %s\n",
+		 data->ti_thermal->type);
+}
 
 static int two_cmp(int tmp, int mask)
 {
@@ -249,18 +270,44 @@ static inline int k3_bgp_read_temp(struct k3_thermal_data *devdata,
 /* Get temperature callback function for thermal zone */
 static int k3_thermal_get_temp(struct thermal_zone_device *tz, int *temp)
 {
-	struct k3_thermal_data *data = tz->devdata;
-	int ret = 0;
+	return k3_bgp_read_temp(tz->devdata, temp);
+}
 
-	ret = k3_bgp_read_temp(data, temp);
+static int k3_thermal_get_trend(struct thermal_zone_device *tz, int trip, enum thermal_trend *trend)
+{
+	struct k3_thermal_data *data = tz->devdata;
+	struct k3_j72xx_bandgap *bgp;
+	u32 temp1, temp2;
+	int id, tr, ret = 0;
+
+	bgp = data->bgp;
+	id = data->sensor_id;
+
+	ret = k3_thermal_get_temp(tz, &temp1);
 	if (ret)
 		return ret;
+	temp2 = data->prev_temp;
+
+	tr = temp1 - temp2;
+
+	data->prev_temp = temp1;
+
+	if (tr > 0)
+		*trend = THERMAL_TREND_RAISING;
+	else if (tr < 0)
+		*trend = THERMAL_TREND_DROPPING;
+	else
+		*trend = THERMAL_TREND_STABLE;
+
+	dev_dbg(bgp->dev, "The temperatures are t1 = %d and t2 = %d and trend =%d\n",
+		temp1, temp2, *trend);
 
 	return ret;
 }
 
 static const struct thermal_zone_device_ops k3_of_thermal_ops = {
 	.get_temp = k3_thermal_get_temp,
+	.get_trend = k3_thermal_get_trend,
 };
 
 static int k3_j72xx_bandgap_temp_to_adc_code(int temp)
@@ -283,7 +330,7 @@ static int k3_j72xx_bandgap_temp_to_adc_code(int temp)
 }
 
 static void get_efuse_values(int id, struct k3_thermal_data *data, int *err,
-			     struct k3_j72xx_bandgap *bgp)
+			     void __iomem *fuse_base)
 {
 	int i, tmp, pow;
 	int ct_offsets[5][K3_VTM_CORRECTION_TEMP_CNT] = {
@@ -305,16 +352,16 @@ static void get_efuse_values(int id, struct k3_thermal_data *data, int *err,
 		/* Extract the offset value using bit-mask */
 		if (ct_offsets[id][i] == -1 && i == 1) {
 			/* 25C offset Case of Sensor 2 split between 2 regs */
-			tmp = (readl(bgp->fuse_base + 0x8) & 0xE0000000) >> (29);
-			tmp |= ((readl(bgp->fuse_base + 0xC) & 0x1F) << 3);
+			tmp = (readl(fuse_base + 0x8) & 0xE0000000) >> (29);
+			tmp |= ((readl(fuse_base + 0xC) & 0x1F) << 3);
 			pow = tmp & 0x80;
 		} else if (ct_offsets[id][i] == -1 && i == 2) {
 			/* 125C Case of Sensor 3 split between 2 regs */
-			tmp = (readl(bgp->fuse_base + 0x4) & 0xF8000000) >> (27);
-			tmp |= ((readl(bgp->fuse_base + 0x8) & 0xF) << 5);
+			tmp = (readl(fuse_base + 0x4) & 0xF8000000) >> (27);
+			tmp |= ((readl(fuse_base + 0x8) & 0xF) << 5);
 			pow = tmp & 0x100;
 		} else {
-			tmp = readl(bgp->fuse_base + ct_offsets[id][i]);
+			tmp = readl(fuse_base + ct_offsets[id][i]);
 			tmp &= ct_bm[id][i];
 			tmp = tmp >> __ffs(ct_bm[id][i]);
 
@@ -346,23 +393,110 @@ static void print_look_up_table(struct device *dev, int *ref_table)
 		dev_dbg(dev, "%d       %d %d\n", i, derived_table[i], ref_table[i]);
 }
 
+static void k3_j72xx_bandgap_init_hw(struct k3_j72xx_bandgap *bgp)
+{
+	struct k3_thermal_data *data;
+	int id, high_max, low_temp;
+	u32 val;
+
+	for (id = 0; id < bgp->cnt; id++) {
+		data = bgp->ts_data[id];
+		val = readl(bgp->cfg2_base + data->ctrl_offset);
+		val |= (K3_VTM_TMPSENS_CTRL_MAXT_OUTRG_EN |
+			K3_VTM_TMPSENS_CTRL_SOC |
+			K3_VTM_TMPSENS_CTRL_CLRZ | BIT(4));
+		writel(val, bgp->cfg2_base + data->ctrl_offset);
+	}
+
+	/*
+	 * Program TSHUT thresholds
+	 * Step 1: set the thresholds to ~123C and 105C WKUP_VTM_MISC_CTRL2
+	 * Step 2: WKUP_VTM_TMPSENS_CTRL_j set the MAXT_OUTRG_EN  bit
+	 *         This is already taken care as per of init
+	 * Step 3: WKUP_VTM_MISC_CTRL set the ANYMAXT_OUTRG_ALERT_EN  bit
+	 */
+	high_max = k3_j72xx_bandgap_temp_to_adc_code(MAX_TEMP);
+	low_temp = k3_j72xx_bandgap_temp_to_adc_code(COOL_DOWN_TEMP);
+
+	writel((low_temp << 16) | high_max, bgp->cfg2_base + K3_VTM_MISC_CTRL2_OFFSET);
+	mdelay(100);
+	writel(K3_VTM_ANYMAXT_OUTRG_ALERT_EN, bgp->cfg2_base + K3_VTM_MISC_CTRL_OFFSET);
+}
+
 struct k3_j72xx_bandgap_data {
-	unsigned int has_errata_i2128;
+	const bool has_errata_i2128;
 };
+
+int k3_thermal_register_cpu_cooling(struct k3_j72xx_bandgap *bgp, int id)
+{
+	struct k3_thermal_data *data;
+	struct device_node *np = bgp->dev->of_node;
+
+	/*
+	 * We are assuming here that if one deploys the zone
+	 * using DT, then it must be aware that the cooling device
+	 * loading has to happen via cpufreq driver.
+	 */
+	if (of_find_property(np, "#thermal-sensor-cells", NULL))
+		return 0;
+
+	data = bgp->ts_data[id];
+	if (!data)
+		return -EINVAL;
+
+	data->policy = cpufreq_cpu_get(0);
+	if (!data->policy) {
+		pr_debug("%s: CPUFreq policy not found\n", __func__);
+		return -EPROBE_DEFER;
+	}
+
+	/* Register cooling device */
+	data->cool_dev = cpufreq_cooling_register(data->policy);
+	if (IS_ERR(data->cool_dev)) {
+		int ret = PTR_ERR(data->cool_dev);
+
+		dev_err(bgp->dev, "Failed to register cpu cooling device %d\n",
+			ret);
+		cpufreq_cpu_put(data->policy);
+
+		return ret;
+	}
+
+	data->mode = THERMAL_DEVICE_ENABLED;
+
+	INIT_WORK(&data->thermal_wq, k3_thermal_work);
+
+	return 0;
+}
+
+int ti_thermal_unregister_cpu_cooling(struct k3_j72xx_bandgap *bgp, int id)
+{
+	struct k3_thermal_data *data;
+
+	data = bgp->ts_data[id];
+
+	if (!IS_ERR_OR_NULL(data)) {
+		cpufreq_cooling_unregister(data->cool_dev);
+		if (data->policy)
+			cpufreq_cpu_put(data->policy);
+	}
+
+	return 0;
+}
 
 static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 {
-	int ret = 0, cnt, val, id;
-	int high_max, low_temp;
-	struct resource *res;
-	struct device *dev = &pdev->dev;
-	struct k3_j72xx_bandgap *bgp;
-	struct k3_thermal_data *data;
-	int workaround_needed = 0;
 	const struct k3_j72xx_bandgap_data *driver_data;
 	struct thermal_zone_device *ti_thermal;
-	int *ref_table;
+	struct device *dev = &pdev->dev;
+	bool workaround_needed = false;
+	struct k3_j72xx_bandgap *bgp;
+	struct k3_thermal_data *data;
 	struct err_values err_vals;
+	void __iomem *fuse_base;
+	int ret = 0, val, id;
+	struct resource *res;
+	int *ref_table;
 
 	const s64 golden_factors[] = {
 		-490019999999999936,
@@ -393,14 +527,31 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 	if (IS_ERR(bgp->cfg2_base))
 		return PTR_ERR(bgp->cfg2_base);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
-	bgp->fuse_base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(bgp->fuse_base))
-		return PTR_ERR(bgp->fuse_base);
-
 	driver_data = of_device_get_match_data(dev);
 	if (driver_data)
 		workaround_needed = driver_data->has_errata_i2128;
+
+	/*
+	 * Some of TI's J721E SoCs require a software trimming procedure
+	 * for the temperature monitors to function properly. To determine
+	 * if this particular SoC is NOT affected, both bits in the
+	 * WKUP_SPARE_FUSE0[31:30] will be set (0xC0000000) indicating
+	 * when software trimming should NOT be applied.
+	 *
+	 * https://www.ti.com/lit/er/sprz455c/sprz455c.pdf
+	 */
+	if (workaround_needed) {
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
+		fuse_base = devm_ioremap_resource(dev, res);
+		if (IS_ERR(fuse_base))
+			return PTR_ERR(fuse_base);
+
+		if ((readl(fuse_base) & 0xc0000000) == 0xc0000000)
+			workaround_needed = false;
+	}
+
+	dev_dbg(bgp->dev, "Work around %sneeded\n",
+		workaround_needed ? "" : "not ");
 
 	pm_runtime_enable(dev);
 	ret = pm_runtime_get_sync(dev);
@@ -412,10 +563,10 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 
 	/* Get the sensor count in the VTM */
 	val = readl(bgp->base + K3_VTM_DEVINFO_PWR0_OFFSET);
-	cnt = val & K3_VTM_DEVINFO_PWR0_TEMPSENS_CT_MASK;
-	cnt >>= __ffs(K3_VTM_DEVINFO_PWR0_TEMPSENS_CT_MASK);
+	bgp->cnt = val & K3_VTM_DEVINFO_PWR0_TEMPSENS_CT_MASK;
+	bgp->cnt >>= __ffs(K3_VTM_DEVINFO_PWR0_TEMPSENS_CT_MASK);
 
-	data = devm_kcalloc(bgp->dev, cnt, sizeof(*data), GFP_KERNEL);
+	data = devm_kcalloc(bgp->dev, bgp->cnt, sizeof(*data), GFP_KERNEL);
 	if (!data) {
 		ret = -ENOMEM;
 		goto err_alloc;
@@ -434,21 +585,15 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 		goto err_free_ref_table;
 	}
 
-	/* Workaround not needed if bit30/bit31 is set even for J721e */
-	if (workaround_needed && (readl(bgp->fuse_base + 0x0) & 0xc0000000) == 0xc0000000)
-		workaround_needed = false;
-
-	dev_dbg(bgp->dev, "Work around %sneeded\n",
-		workaround_needed ? "not " : "");
-
 	if (!workaround_needed)
 		init_table(5, ref_table, golden_factors);
 	else
 		init_table(3, ref_table, pvt_wa_factors);
 
-	/* Register the thermal sensors */
-	for (id = 0; id < cnt; id++) {
+	/* Precompute the derived table & fill each thermal sensor struct */
+	for (id = 0; id < bgp->cnt; id++) {
 		data[id].bgp = bgp;
+		data[id].sensor_id = id;
 		data[id].ctrl_offset = K3_VTM_TMPSENS0_CTRL_OFFSET + id * 0x20;
 		data[id].stat_offset = data[id].ctrl_offset +
 					K3_VTM_TMPSENS_STAT_OFFSET;
@@ -459,7 +604,7 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 			err_vals.refs[1] = PLUS30CREF;
 			err_vals.refs[2] = PLUS125CREF;
 			err_vals.refs[3] = PLUS150CREF;
-			get_efuse_values(id, &data[id], err_vals.errs, bgp);
+			get_efuse_values(id, &data[id], err_vals.errs, fuse_base);
 		}
 
 		if (id == 0 && workaround_needed)
@@ -467,13 +612,17 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 		else if (id == 0 && !workaround_needed)
 			memcpy(derived_table, ref_table, TABLE_SIZE * 4);
 
-		val = readl(data[id].bgp->cfg2_base + data[id].ctrl_offset);
-		val |= (K3_VTM_TMPSENS_CTRL_MAXT_OUTRG_EN |
-			K3_VTM_TMPSENS_CTRL_SOC |
-			K3_VTM_TMPSENS_CTRL_CLRZ | BIT(4));
-		writel(val, data[id].bgp->cfg2_base + data[id].ctrl_offset);
-
 		bgp->ts_data[id] = &data[id];
+	}
+
+	k3_j72xx_bandgap_init_hw(bgp);
+
+	for (id = 0; id < bgp->cnt; id++) {
+		if (id == 1)
+			ret = k3_thermal_register_cpu_cooling(bgp, 1);
+		if (ret)
+			goto err_alloc;
+
 		ti_thermal = devm_thermal_of_zone_register(bgp->dev, id, &data[id],
 							   &k3_of_thermal_ops);
 		if (IS_ERR(ti_thermal)) {
@@ -482,22 +631,6 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 			goto err_free_ref_table;
 		}
 	}
-
-	/*
-	 * Program TSHUT thresholds
-	 * Step 1: set the thresholds to ~123C and 105C WKUP_VTM_MISC_CTRL2
-	 * Step 2: WKUP_VTM_TMPSENS_CTRL_j set the MAXT_OUTRG_EN  bit
-	 *         This is already taken care as per of init
-	 * Step 3: WKUP_VTM_MISC_CTRL set the ANYMAXT_OUTRG_ALERT_EN  bit
-	 */
-	high_max = k3_j72xx_bandgap_temp_to_adc_code(MAX_TEMP);
-	low_temp = k3_j72xx_bandgap_temp_to_adc_code(COOL_DOWN_TEMP);
-
-	writel((low_temp << 16) | high_max, data[0].bgp->cfg2_base +
-	       K3_VTM_MISC_CTRL2_OFFSET);
-	mdelay(100);
-	writel(K3_VTM_ANYMAXT_OUTRG_ALERT_EN, data[0].bgp->cfg2_base +
-	       K3_VTM_MISC_CTRL_OFFSET);
 
 	platform_set_drvdata(pdev, bgp);
 
@@ -528,12 +661,41 @@ static int k3_j72xx_bandgap_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static int __maybe_unused k3_j72xx_bandgap_suspend(struct device *dev)
+{
+	pm_runtime_put_sync(dev);
+	pm_runtime_disable(dev);
+	return 0;
+}
+
+static int __maybe_unused k3_j72xx_bandgap_resume(struct device *dev)
+{
+	struct k3_j72xx_bandgap *bgp = dev_get_drvdata(dev);
+	int ret;
+
+	pm_runtime_enable(dev);
+	ret = pm_runtime_get_sync(dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(dev);
+		pm_runtime_disable(dev);
+		return ret;
+	}
+
+	k3_j72xx_bandgap_init_hw(bgp);
+
+	return 0;
+}
+
+static const struct dev_pm_ops k3_j72xx_bandgap_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(k3_j72xx_bandgap_suspend, k3_j72xx_bandgap_resume)
+};
+
 static const struct k3_j72xx_bandgap_data k3_j72xx_bandgap_j721e_data = {
-	.has_errata_i2128 = 1,
+	.has_errata_i2128 = true,
 };
 
 static const struct k3_j72xx_bandgap_data k3_j72xx_bandgap_j7200_data = {
-	.has_errata_i2128 = 0,
+	.has_errata_i2128 = false,
 };
 
 static const struct of_device_id of_k3_j72xx_bandgap_match[] = {
@@ -555,6 +717,7 @@ static struct platform_driver k3_j72xx_bandgap_sensor_driver = {
 	.driver = {
 		.name = "k3-j72xx-soc-thermal",
 		.of_match_table	= of_k3_j72xx_bandgap_match,
+		.pm = &k3_j72xx_bandgap_pm_ops,
 	},
 };
 

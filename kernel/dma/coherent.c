@@ -4,6 +4,7 @@
  * Borrowed from i386
  */
 #include <linux/io.h>
+#include <linux/of.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -132,8 +133,10 @@ int dma_declare_coherent_memory(struct device *dev, phys_addr_t phys_addr,
 
 void dma_release_coherent_memory(struct device *dev)
 {
-	if (dev)
+	if (dev) {
 		_dma_release_coherent_memory(dev->dma_mem);
+		dev->dma_mem = NULL;
+	}
 }
 
 static void *__dma_alloc_from_coherent(struct device *dev,
@@ -144,6 +147,9 @@ static void *__dma_alloc_from_coherent(struct device *dev,
 	unsigned long flags;
 	int pageno;
 	void *ret;
+	static bool ipu_early_booted;
+
+	ipu_early_booted = of_property_read_bool(dev->of_node, "late_attach");
 
 	spin_lock_irqsave(&mem->spinlock, flags);
 
@@ -161,7 +167,8 @@ static void *__dma_alloc_from_coherent(struct device *dev,
 			((dma_addr_t)pageno << PAGE_SHIFT);
 	ret = mem->virt_base + ((dma_addr_t)pageno << PAGE_SHIFT);
 	spin_unlock_irqrestore(&mem->spinlock, flags);
-	memset(ret, 0, size);
+	if (!(strstr(dev->kobj.name, "58820000.ipu") && ipu_early_booted))
+		memset(ret, 0, size);
 	return ret;
 err:
 	spin_unlock_irqrestore(&mem->spinlock, flags);

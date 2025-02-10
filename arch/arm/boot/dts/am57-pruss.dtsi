@@ -5,6 +5,13 @@
  * Common PRUSS data for TI AM57xx platforms
  */
 
+/ {
+	aliases {
+		pruss_iep1 = &pruss1_iep;
+		pruss_iep2 = &pruss2_iep;
+	};
+};
+
 &ocp {
 	pruss1_tm: target-module@4b226000 {
 		compatible = "ti,sysc-pruss", "ti,sysc";
@@ -61,6 +68,12 @@
 				};
 			};
 
+			pruss1_iep: iep@2e000 {
+				compatible = "ti,am5728-icss-iep";
+				reg = <0x2e000 0x31c>;
+				clocks = <&pruss1_iepclk_mux>;
+			};
+
 			pruss1_mii_rt: mii-rt@32000 {
 				compatible = "ti,pruss-mii", "syscon";
 				reg = <0x32000 0x58>;
@@ -92,6 +105,9 @@
 				      <0x22400 0x100>;
 				reg-names = "iram", "control", "debug";
 				firmware-name = "am57xx-pru1_0-fw";
+				interrupt-parent = <&pruss1_intc>;
+				interrupts = <16 2 2>;
+				interrupt-names = "vring";
 			};
 
 			pru1_1: pru@38000 {
@@ -101,6 +117,9 @@
 				      <0x24400 0x100>;
 				reg-names = "iram", "control", "debug";
 				firmware-name = "am57xx-pru1_1-fw";
+				interrupt-parent = <&pruss1_intc>;
+				interrupts = <18 3 3>;
+				interrupt-names = "vring";
 			};
 
 			pruss1_mdio: mdio@32400 {
@@ -111,6 +130,7 @@
 				clock-names = "fck";
 				bus_freq = <1000000>;
 				reg = <0x32400 0x90>;
+				status = "disabled";
 			};
 		};
 	};
@@ -170,6 +190,12 @@
 				};
 			};
 
+			pruss2_iep: iep@2e000 {
+				compatible = "ti,am5728-icss-iep";
+				reg = <0x2e000 0x31c>;
+				clocks = <&pruss2_iepclk_mux>;
+			};
+
 			pruss2_mii_rt: mii-rt@32000 {
 				compatible = "ti,pruss-mii", "syscon";
 				reg = <0x32000 0x58>;
@@ -201,6 +227,9 @@
 				      <0x22400 0x100>;
 				reg-names = "iram", "control", "debug";
 				firmware-name = "am57xx-pru2_0-fw";
+				interrupt-parent = <&pruss2_intc>;
+				interrupts = <16 2 2>;
+				interrupt-names = "vring";
 			};
 
 			pru2_1: pru@38000 {
@@ -210,6 +239,9 @@
 				      <0x24400 0x100>;
 				reg-names = "iram", "control", "debug";
 				firmware-name = "am57xx-pru2_1-fw";
+				interrupt-parent = <&pruss2_intc>;
+				interrupts = <18 3 3>;
+				interrupt-names = "vring";
 			};
 
 			pruss2_mdio: mdio@32400 {
@@ -220,6 +252,7 @@
 				clock-names = "fck";
 				bus_freq = <1000000>;
 				reg = <0x32400 0x90>;
+				status = "disabled";
 			};
 		};
 	};

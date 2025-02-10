@@ -132,7 +132,7 @@ ssize_t read_from_oldmem(struct iov_iter *iter, size_t count,
 			 u64 *ppos, bool encrypted)
 {
 	unsigned long pfn, offset;
-	size_t nr_bytes;
+	ssize_t nr_bytes;
 	ssize_t read = 0, tmp;
 	int idx;
 
@@ -199,7 +199,7 @@ ssize_t __weak elfcorehdr_read(char *buf, size_t count, u64 *ppos)
 	struct kvec kvec = { .iov_base = buf, .iov_len = count };
 	struct iov_iter iter;
 
-	iov_iter_kvec(&iter, READ, &kvec, 1, count);
+	iov_iter_kvec(&iter, ITER_DEST, &kvec, 1, count);
 
 	return read_from_oldmem(&iter, count, ppos, false);
 }
@@ -212,7 +212,7 @@ ssize_t __weak elfcorehdr_read_notes(char *buf, size_t count, u64 *ppos)
 	struct kvec kvec = { .iov_base = buf, .iov_len = count };
 	struct iov_iter iter;
 
-	iov_iter_kvec(&iter, READ, &kvec, 1, count);
+	iov_iter_kvec(&iter, ITER_DEST, &kvec, 1, count);
 
 	return read_from_oldmem(&iter, count, ppos,
 			cc_platform_has(CC_ATTR_MEM_ENCRYPT));
@@ -383,6 +383,8 @@ static ssize_t __read_vmcore(struct iov_iter *iter, loff_t *fpos)
 		/* leave now if filled buffer already */
 		if (!iov_iter_count(iter))
 			return acc;
+
+		cond_resched();
 	}
 
 	list_for_each_entry(m, &vmcore_list, list) {
@@ -437,7 +439,7 @@ static vm_fault_t mmap_vmcore_fault(struct vm_fault *vmf)
 		offset = (loff_t) index << PAGE_SHIFT;
 		kvec.iov_base = page_address(page);
 		kvec.iov_len = PAGE_SIZE;
-		iov_iter_kvec(&iter, READ, &kvec, 1, PAGE_SIZE);
+		iov_iter_kvec(&iter, ITER_DEST, &kvec, 1, PAGE_SIZE);
 
 		rc = __read_vmcore(&iter, &offset);
 		if (rc < 0) {
@@ -454,10 +456,6 @@ static vm_fault_t mmap_vmcore_fault(struct vm_fault *vmf)
 	return VM_FAULT_SIGBUS;
 #endif
 }
-
-static const struct vm_operations_struct vmcore_mmap_ops = {
-	.fault = mmap_vmcore_fault,
-};
 
 /**
  * vmcore_alloc_buf - allocate buffer in vmalloc memory
@@ -486,6 +484,11 @@ static inline char *vmcore_alloc_buf(size_t size)
  * virtually contiguous user-space in ELF layout.
  */
 #ifdef CONFIG_MMU
+
+static const struct vm_operations_struct vmcore_mmap_ops = {
+	.fault = mmap_vmcore_fault,
+};
+
 /*
  * remap_oldmem_pfn_checked - do remap_oldmem_pfn_range replacing all pages
  * reported as not being ram with the zero page.
