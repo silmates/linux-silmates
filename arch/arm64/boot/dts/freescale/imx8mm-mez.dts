@@ -27,7 +27,6 @@
 			linux,default-trigger = "heartbeat";
 			gpios = <&gpio3 16 GPIO_ACTIVE_HIGH>;
 		};
-		
 	};
 
 	regulators {
@@ -61,12 +60,13 @@
 			pinctrl-names = "default";
 			pinctrl-0 = <&pinctrl_usdhc1_gpio>;
 			reset-gpios = <&gpio2 10 GPIO_ACTIVE_LOW>; /* WL REG ON */
-			post-power-on-delay-ms = <120>;
 			status = "okay";
 		};
 
 		uart2_pwrseq: uart2_pwrseq {
 			compatible = "gpio-reset";
+			pinctrl-names = "default";
+			pinctrl-0 = <&pinctrl_bt_en>;
 			reset-gpios = <&gpio2 6 GPIO_ACTIVE_LOW>;  /* BT REG ON */
 			reset-delay-us = <1000>;
 			#reset-cells = <0>;
@@ -191,20 +191,19 @@
 			>;
 		};
 
-		pinctrl_wlan: wlangrp {
-			fsl,pins = <
-				MX8MM_IOMUXC_GPIO1_IO00_ANAMIX_REF_CLK_32K	0x141
-				MX8MM_IOMUXC_SD1_DATA7_GPIO2_IO9		0x159
-			>;
-		};
-		
-		pinctrl_bt: btgrp {
+		pinctrl_bt_en: btgrp {
 			fsl,pins = <
 				MX8MM_IOMUXC_SD1_DATA4_GPIO2_IO6		0x159
 			>;
 		};
 
-
+		pinctrl_wlan: wlangrp {
+			fsl,pins = <
+				MX8MM_IOMUXC_GPIO1_IO00_ANAMIX_REF_CLK_32K	0x141
+				MX8MM_IOMUXC_SD1_DATA7_GPIO2_IO9		0x1c4
+			>;
+		};
+		
 		pinctrl_usdhc1_gpio: usdhc1grpgpio {
 			fsl,pins = <
 				MX8MM_IOMUXC_SD1_RESET_B_GPIO2_IO10	0x41
@@ -532,7 +531,7 @@
 
 &uart2 { /* Bluetooth UART */
 	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_uart2>,<&pinctrl_bt>;
+	pinctrl-0 = <&pinctrl_uart2>;
 	resets = <&uart2_pwrseq>;
 	assigned-clocks = <&clk IMX8MM_CLK_UART2>;
 	assigned-clock-parents = <&clk IMX8MM_SYS_PLL1_80M>;
@@ -592,20 +591,25 @@
 
 /* WIFI */
 &usdhc1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_usdhc1>, <&pinctrl_wlan>;
+	/delete-property/ cd-gpios;
 	bus-width = <4>;
 	keep-power-in-suspend;
 	non-removable;
 	wakeup-source;
+	pm-ignore-notify;
+	cap-power-off;
 	mmc-pwrseq = <&usdhc1_pwrseq>;
-	fsl,sdio-async-interrupt-enabled;
 	status = "okay";
 	no-1-8-v;
 	no-mmc-hs400;
 
-	wifi_wake_host {
-		compatible = "nxp,wifi-wake-host";
+	brcmf: bcrmf@1 {
+		reg = <1>;
+		compatible = "brcm,bcm4329-fmac";
 		interrupt-parent = <&gpio2>;
 		interrupts = <9 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-names = "host-wake";
