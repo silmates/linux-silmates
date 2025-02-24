@@ -1,18 +1,30 @@
-Linux kernel
-============
+# Create a directory for your OE-Core setup to live in and clone the meta-information:
+```sh
+https://github.com/silmates/linux-silmates.git -b <branch_name>
+```
+# here we take reference from TI for sm-ti-6.1.y branch:- 
+https://git.ti.com/git/ti-linux-kernel/ti-linux-kernel.git -b ti-linux-6.1.y
 
-There are several guides for kernel developers and users. These guides can
-be rendered in a number of formats, like HTML and PDF. Please read
-Documentation/admin-guide/README.rst first.
+## Without interrupting URL by giving ID and password Configure below steps :-
 
-In order to build the documentation, use ``make htmldocs`` or
-``make pdfdocs``.  The formatted documentation can also be read online at:
+# Generate SSH-keys:
+```sh
+ssh-keygen -t rsa -b 4096 -C "<your gitlab mail id>" -f ~/.ssh/<mycustom_rsa>
+```
 
-    https://www.kernel.org/doc/html/latest/
+# Enter the key installation path (/home/user/.ssh/<key_name>) and add SSH-key to SSH-agent:
+```sh
+ssh-add ~/.ssh/<key_name>
+```
 
-There are various text files in the Documentation/ subdirectory,
-several of them using the Restructured Text markup notation.
+# Copy SSH Key to Clipboard:
+```sh
+cat ~/.ssh/<key_name.pub>
+```
 
-Please read the Documentation/process/changes.rst file, as it contains the
-requirements for building and running the kernel, and information about
-the problems which may result by upgrading your kernel.
+# Add keys to your GIT-LAB:
+```sh 
+   I)   login to your git-hub
+   II)  user setting --> ssh key genration 
+   III) add key  
+``` 
