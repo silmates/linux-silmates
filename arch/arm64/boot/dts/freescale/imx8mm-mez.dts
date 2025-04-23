@@ -499,7 +499,8 @@
 		panel-height-mm = <135>;
 		rotation = <270>;
 */
-		compatible = "boe,nt156whm-n44";
+/*		compatible = "boe,nt156whm-n44"; */
+		compatible = "auo,b156han02_1_0A";
 		panel-width-mm = <344>;
 		panel-height-mm = <193>;
 

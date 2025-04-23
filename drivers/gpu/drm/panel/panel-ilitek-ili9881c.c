@@ -27,6 +27,7 @@ enum {
 	PANEL_LHR050H41=1,
 	PANEL_TS101WXU_NWO,
 	PANEL_NT156WHM_N44,
+	PANEL_B156HAN02_1_0A,
 };
 
 struct ili9881c_desc {
@@ -482,6 +483,10 @@ static const struct ili9881c_instr nt156whm_n44_init[] = {
 
 };
 
+static const struct ili9881c_instr b156han02_1_0A_init[] = {
+
+};
+
 static const struct drm_display_mode lhr050h41_default_mode = {
 	.clock		= 62000,
 	.hdisplay	= 720,
@@ -543,6 +548,39 @@ static const struct drm_display_mode nt156whm_n44_default_mode = {
 		 DRM_MODE_FLAG_NVSYNC,
 };
 
+static const struct drm_display_mode b156han02_1_0A_default_mode = {
+	.clock = 141000,//148000,//149000,//148500,//150000,
+	.hdisplay = 1920,
+	.hsync_start = 1920 + 108,
+	.hsync_end = 1920 + 108 + 48,
+	.htotal = 1920 + 108 + 48 + 10,
+	.vdisplay = 1080,
+	.vsync_start = 1080 + 10,
+	.vsync_end = 1080 + 10 + 10,
+	.vtotal = 1080 + 10 + 10 + 26,
+	.width_mm = 344,
+	.height_mm = 194,
+	.flags = DRM_MODE_FLAG_NHSYNC |
+		 DRM_MODE_FLAG_NVSYNC,
+};
+
+/*
+static const struct drm_display_mode b156han02_1_0A_default_mode = {
+	.clock = 148500,
+	.hdisplay = 1920,
+	.hsync_start = 1920 + 88,
+	.hsync_end = 1920 + 88 + 44,
+	.htotal = 1920 + 88 + 44 + 148,
+	.vdisplay = 1080,
+	.vsync_start = 1080 + 4,
+	.vsync_end = 1080 + 4 + 5,
+	.vtotal = 1080 + 4 + 5 + 36,
+	.width_mm = 344,
+	.height_mm = 194,
+	.flags = DRM_MODE_FLAG_NHSYNC |
+		 DRM_MODE_FLAG_NVSYNC,
+};
+*/
 static inline struct ili9881c *panel_to_ili9881c(struct drm_panel *panel)
 {
 	return container_of(panel, struct ili9881c, panel);
@@ -623,7 +661,8 @@ static int ili9881c_enable(struct drm_panel *panel)
 
 	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
-	if(ctx->desc->id == PANEL_NT156WHM_N44) {
+	if((ctx->desc->id == PANEL_NT156WHM_N44)
+		|| (ctx->desc->id == PANEL_B156HAN02_1_0A)) {
 		msleep(120);
 		ctx->enabled = true;
 		return 0;
@@ -685,7 +724,8 @@ static int ili9881c_disable(struct drm_panel *panel)
 
 	usleep_range(10000, 12000);
 
-	if(ctx->desc->id == PANEL_NT156WHM_N44) {
+	if((ctx->desc->id == PANEL_NT156WHM_N44)
+		|| (ctx->desc->id == PANEL_B156HAN02_1_0A)) {
 		ctx->enabled = false;
 		return 0;
 	}
@@ -937,10 +977,19 @@ static const struct ili9881c_desc nt156whm_n44_desc = {
 	.default_address_mode = 0x00,
 };
 
+static const struct ili9881c_desc b156han02_1_0A_desc = {
+	.init = b156han02_1_0A_init,
+	.init_length = ARRAY_SIZE(b156han02_1_0A_init),
+	.mode = &b156han02_1_0A_default_mode,
+	.id = PANEL_B156HAN02_1_0A,
+	.default_address_mode = 0x00,
+};
+
 static const struct of_device_id ili9881c_of_match[] = {
 	{ .compatible = "bananapi,lhr050h41", .data = &lhr050h41_desc },
 	{ .compatible = "boe,ts101wxu-nwo", .data = &ts101wxu_nwo_desc },
 	{ .compatible = "boe,nt156whm-n44", .data = &nt156whm_n44_desc },
+	{ .compatible = "auo,b156han02_1_0A", .data = &b156han02_1_0A_desc },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, ili9881c_of_match);
