@@ -549,7 +549,7 @@ static const struct drm_display_mode nt156whm_n44_default_mode = {
 };
 
 static const struct drm_display_mode b156han02_1_0A_default_mode = {
-	.clock = 141000,//148000,//149000,//148500,//150000,
+	.clock = 120000,//141000,//148000,//149000,//148500,//150000,
 	.hdisplay = 1920,
 	.hsync_start = 1920 + 108,
 	.hsync_end = 1920 + 108 + 48,
