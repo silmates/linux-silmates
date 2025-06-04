@@ -548,6 +548,10 @@ static const struct drm_display_mode nt156whm_n44_default_mode = {
 		 DRM_MODE_FLAG_NVSYNC,
 };
 
+// vtotal should be max to 1126
+// 120 MHz @ 47Hz
+// 130,135,140 MHz 
+// for 141000 
 static const struct drm_display_mode b156han02_1_0A_default_mode = {
 	.clock = 120000,//141000,//148000,//149000,//148500,//150000,
 	.hdisplay = 1920,
@@ -557,7 +561,7 @@ static const struct drm_display_mode b156han02_1_0A_default_mode = {
 	.vdisplay = 1080,
 	.vsync_start = 1080 + 10,
 	.vsync_end = 1080 + 10 + 10,
-	.vtotal = 1080 + 10 + 10 + 26,
+	.vtotal = 1080 + 10 + 10 + 26, // 1126
 	.width_mm = 344,
 	.height_mm = 194,
 	.flags = DRM_MODE_FLAG_NHSYNC |
