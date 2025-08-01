@@ -15,7 +15,7 @@
 
 	memory@40000000 {
 		device_type = "memory";
-		reg = <0x0 0x40000000 0 0x60000000>;
+		reg = <0x0 0x40000000 0 0x80000000>;
 	};
 
 	reserved-memory {
@@ -346,11 +346,12 @@
 		#size-cells = <0>;
 
 		ethphy0: ethernet-phy@3 {
-			compatible = "ethernet-phy-ieee802.3-c22";
 			reg = <3>;
+			micrel,led-mode = <0>;
+			compatible = "ethernet-phy-ieee802.3-c22";
+
 			interrupt-parent = <&gpio1>;
 			interrupts = <7 IRQ_TYPE_LEVEL_LOW>;
-			micrel,led-mode = <0>;
 		};
 	};
 };
