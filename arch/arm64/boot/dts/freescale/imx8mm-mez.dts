@@ -12,6 +12,11 @@
 	model = "Silmates i.MX8MM MEZ board";
 	compatible = "fsl,imx8mm-mez", "fsl,imx8mm";
 
+    aliases {
+        rtc0 = &snvs_rtc;
+        rtc1 = &pcf85263a_rtc;
+    };
+
 	chosen {
 		bootargs = "console=ttymxc3,115200 earlycon=ec_imx6q,0x30a60000,115200";
 		stdout-path = &uart4;
@@ -337,7 +342,6 @@
 
 	};
 };
-
 
 &i2c1 {
     eeprom_bb: eeprom@53 {
