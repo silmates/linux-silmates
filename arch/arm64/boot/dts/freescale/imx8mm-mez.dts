@@ -163,7 +163,7 @@
 
 		pinctrl_touchscreen: touchscreengrp {
 			fsl,pins = <
-				MX8MM_IOMUXC_SAI1_RXFS_GPIO4_IO0		0x1c4
+				MX8MM_IOMUXC_SAI1_RXFS_GPIO4_IO0		0x40000
 				MX8MM_IOMUXC_SAI1_RXC_GPIO4_IO1			0x1c4
 			>;
 		};
@@ -462,6 +462,7 @@
 };
 
 &i2c3 {
+	/*
 	goodix_ts: gt928@5d {
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_touchscreen>;
@@ -475,6 +476,21 @@
 		touchscreen-inverted-y = <1>;
 		status = "okay";
 	};
+	*/
+/*
+	ili2511_ts: ili2511@41 {
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_touchscreen>;
+		compatible = "ilitek,ili251x";
+		reg = <0x41>;
+		interrupt-parent = <&gpio4>;
+		interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&gpio4 1 GPIO_ACTIVE_HIGH>;
+		touchscreen-size-x = <1920>;
+		touchscreen-size-y = <1080>;
+		status = "okay";
+	};
+	*/
 };
 
 &pwm1 {
@@ -514,10 +530,7 @@
 		backlight = <&backlight>;
 		reset-gpio = <&gpio3 21 GPIO_ACTIVE_LOW>;
 		dsi-lanes = <4>;
-		video-mode = <2>;	/* 0: burst mode
-					 * 1: non-burst mode with sync event
-					 * 2: non-burst mode with sync pulse
-					 */
+		video-mode = <2>;
 		status = "okay";
 
 	};
@@ -577,7 +590,6 @@
 	disable-over-current;
 	/delete-property/ usb-role-switch;
 };
-
 
 &usbphynop1 {
 	vcc-supply = <&buck4_reg>;
