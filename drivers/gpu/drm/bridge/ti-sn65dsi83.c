@@ -144,6 +144,7 @@ struct sn65dsi83 {
 	struct drm_bridge		*panel_bridge;
 	struct gpio_desc		*enable_gpio;
 	int				dsi_lanes;
+	unsigned int			mode_flags;
 	bool				lvds_dual_link;
 	bool				lvds_dual_link_even_odd_swap;
 };
@@ -272,7 +273,7 @@ static int sn65dsi83_attach(struct drm_bridge *bridge,
 
 	dsi->lanes = ctx->dsi_lanes;
 	dsi->format = MIPI_DSI_FMT_RGB888;
-	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST;
+	dsi->mode_flags = ctx->mode_flags;
 
 	ret = mipi_dsi_attach(dsi);
 	if (ret < 0) {
@@ -286,6 +287,17 @@ static int sn65dsi83_attach(struct drm_bridge *bridge,
 err_dsi_attach:
 	mipi_dsi_device_unregister(dsi);
 	return ret;
+}
+
+
+static void sn65dsi83_detach(struct drm_bridge *bridge)
+{
+	struct sn65dsi83 *ctx = bridge_to_sn65dsi83(bridge);
+
+	if (!ctx->dsi)
+		return;
+
+	ctx->dsi = NULL;
 }
 
 static void sn65dsi83_atomic_pre_enable(struct drm_bridge *bridge,
@@ -583,6 +595,7 @@ sn65dsi83_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
 
 static const struct drm_bridge_funcs sn65dsi83_funcs = {
 	.attach			= sn65dsi83_attach,
+	.detach			= sn65dsi83_detach,
 	.atomic_pre_enable	= sn65dsi83_atomic_pre_enable,
 	.atomic_enable		= sn65dsi83_atomic_enable,
 	.atomic_disable		= sn65dsi83_atomic_disable,
@@ -602,6 +615,9 @@ static int sn65dsi83_parse_dt(struct sn65dsi83 *ctx, enum sn65dsi83_model model)
 	struct device_node *endpoint;
 	struct drm_panel *panel;
 	int ret;
+
+	/* Use custom mipi mode flags if provided */
+	ctx->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST | MIPI_DSI_MODE_NO_EOT_PACKET;
 
 	endpoint = of_graph_get_endpoint_by_regs(dev->of_node, 0, 0);
 	ctx->dsi_lanes = of_property_count_u32_elems(endpoint, "data-lanes");
@@ -701,6 +717,8 @@ static int sn65dsi83_probe(struct i2c_client *client,
 	ctx->bridge.funcs = &sn65dsi83_funcs;
 	ctx->bridge.of_node = dev->of_node;
 	drm_bridge_add(&ctx->bridge);
+
+	dev_info(dev, "initialized successfully\n");
 
 	return 0;
 

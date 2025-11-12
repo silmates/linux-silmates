@@ -1160,14 +1160,13 @@ drm_atomic_helper_update_legacy_modeset_state(struct drm_device *dev,
 		crtc = new_conn_state->crtc;
 		if ((!crtc && old_conn_state->crtc) ||
 		    (crtc && drm_atomic_crtc_needs_modeset(crtc->state))) {
-//			int mode = DRM_MODE_DPMS_OFF;
-			int mode = DRM_MODE_DPMS_ON;	// always ON
+			int mode = DRM_MODE_DPMS_OFF;
+			// int mode = DRM_MODE_DPMS_ON;	// always ON
 
 			if (crtc && crtc->state->active)
 				mode = DRM_MODE_DPMS_ON;
 
 			connector->dpms = mode;
-//			drm_notifier_call_chain(mode, connector->dev); //MM
 		}
 	}
 

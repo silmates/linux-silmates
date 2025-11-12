@@ -3,7 +3,7 @@
  * Copyright (C) 2020 Markus Bauer <mb@karo-electronics.de>
  */
 
-#include <linux/delay.h>
+ #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
@@ -28,7 +28,6 @@
 #include "sn65dsi83_timing.h"
 #include "sn65dsi83_brg.h"
 
-#define DEBUG	1
 
 struct sn65dsi83 {
 	u8 channel_id;

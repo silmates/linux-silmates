@@ -124,7 +124,48 @@
 		rotary-encoder,relative-axis;
     };
 
+	panel: panel_lvds  {
+		compatible = "panel-lvds";
+		backlight = <&backlight>;
+		width-mm = <154>;
+		height-mm = <85>;
+		data-mapping ="vesa-24";
+        enable-gpios = <&gpio3 20 GPIO_ACTIVE_HIGH>;
 
+		panel-timing {
+			clock-frequency = <51200000>;
+			hactive = <1024>;
+			vactive = <600>;
+
+			hback-porch = <160>;
+			hfront-porch = <140>;
+			hsync-len = <20>;
+
+			vback-porch = <23>;
+			vfront-porch = <12>;
+			vsync-len = <2>;
+/*
+			hsync-active = <0>;
+			vsync-active = <0>;
+
+			de-active = <0>;
+			pixelclk-active = <0>;
+*/
+		};
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				panel_in: endpoint {
+					remote-endpoint = <&bridge_out>;
+				};
+			};
+		};
+	};
 };
 
 
@@ -491,6 +532,52 @@
 		status = "okay";
 	};
 	*/
+
+	goodix_ts:gt911@14 {
+		compatible = "goodix,gt911";
+		reg = <0x14>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_touchscreen>;
+		interrupt-parent = <&gpio4>;
+		interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+		irq-gpios = <&gpio4 0 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio4 1 GPIO_ACTIVE_HIGH>;
+		touchscreen-size-x = <1024>;
+		touchscreen-size-y = <600>;
+	};
+
+    dsi_lvds_bridge: sn65dsi83@2c {
+        compatible = "ti,sn65dsi83";
+        reg = <0x2c>;
+        pinctrl-names = "default";
+        pinctrl-0 = <&pinctrl_mipi_extra>;
+        enable-gpios = <&gpio3 21 GPIO_ACTIVE_HIGH>;
+        status = "okay";
+
+		of-depends-on = <&panel>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				bridge_in: endpoint {
+					remote-endpoint = <&mipi_dsi_out>;
+					data-lanes = <1 2 3 4>;
+				};
+			};
+
+			port@2 {
+				reg = <2>;
+
+				bridge_out: endpoint {
+					remote-endpoint = <&panel_in>;
+				};
+			};
+		};
+    };
 };
 
 &pwm1 {
@@ -512,27 +599,11 @@
 &mipi_dsi {
 	status = "okay";
 
-	panel@0 {
-/*
-		compatible = "boe,ts101wxu-nwo";
-		panel-width-mm = <216>;
-		panel-height-mm = <135>;
-		rotation = <270>;
-*/
-/*		compatible = "boe,nt156whm-n44"; */
-		compatible = "auo,b156han02_1_0A";
-		panel-width-mm = <344>;
-		panel-height-mm = <193>;
-
-		reg = <0>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_mipi_en>;
-		backlight = <&backlight>;
-		reset-gpio = <&gpio3 21 GPIO_ACTIVE_LOW>;
-		dsi-lanes = <4>;
-		video-mode = <2>;
-		status = "okay";
-
+	port@1 {
+		mipi_dsi_out: endpoint {
+			remote-endpoint = <&bridge_in>;
+			attach-bridge;
+		};
 	};
 };
 

@@ -9,17 +9,17 @@
 #include <video/display_timing.h>
 
 /* Default Video Parameters */
-#define PIXCLK_INIT 62500000
+#define PIXCLK_INIT 51200000
 
 #define HACTIVE_INIT 1280
 #define HPW_INIT 2
-#define HBP_INIT 6
-#define HFP_INIT 5
+#define HBP_INIT 160
+#define HFP_INIT 160
 
 #define VACTIVE_INIT 800
 #define VPW_INIT 1
-#define VBP_INIT 2
-#define VFP_INIT 3
+#define VBP_INIT 23
+#define VFP_INIT 12
 
 static const struct display_timing panel_default_timing = {
 	.pixelclock = { PIXCLK_INIT, PIXCLK_INIT, PIXCLK_INIT },

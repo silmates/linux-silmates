@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  */
 
-#include <linux/i2c.h>
+ #include <linux/i2c.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
@@ -36,7 +36,6 @@
 #include "sn65dsi83_brg.h"
 
 /* Register addresses */
-#define DEBUG	1
 
 #define SN65DSI83_SOFT_RESET 0x09
 #define SN65DSI83_CORE_PLL 0x0A
@@ -258,8 +257,8 @@ static int sn65dsi83_brg_configure(struct sn65dsi83_brg *brg)
 	struct videomode *vm = VM(brg);
 	u32 dsi_clk = (((PIXCLK * BPP(brg)) / DSI_LANES(brg)) >> 1);
 
-	dev_info(&client->dev, "DSI clock [ %u ] Hz\n", dsi_clk);
-	dev_info(&client->dev, "Resolution [ %d x %d ] Hz\n", HACTIVE, VACTIVE);
+	dev_info(&client->dev, "DSI clock [ %u ] Hz ,PixelClock [ %lu ] Hz ,DSI Lanes [ %u ] \n", dsi_clk,PIXCLK,DSI_LANES(brg));
+	dev_info(&client->dev, "Resolution [ %d x %d ] Hz ,BPP [ %u ] bits \n", HACTIVE, VACTIVE, BPP(brg));
 
 	/* Reset PLL_EN and SOFT_RESET registers */
 	SN65DSI83_WRITE(SN65DSI83_SOFT_RESET, 0x00);

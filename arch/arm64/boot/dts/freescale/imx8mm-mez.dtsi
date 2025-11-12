@@ -12,7 +12,14 @@
 / {
 	model = "Silmates i.MX8MM MEZ board";
 	compatible = "fsl,imx8mm-mez", "fsl,imx8mm";
-
+/*
+	firmware {
+		optee {
+			compatible = "linaro,optee-tz";
+			method = "smc" ;
+		} ;
+	} ;
+*/
 	memory@40000000 {
 		device_type = "memory";
 		reg = <0x0 0x40000000 0 0x80000000>;
@@ -59,7 +66,7 @@
 		pinctrl-0 = <&pinctrl_backlight>;
 		brightness-levels = <0 255>;
 		num-interpolated-steps = <255>;
-		default-brightness-level = <127>;
+		default-brightness-level = <255>;
 		power-supply = <&reg_system_3v3>;
 		pwms = <&pwm1 0 50000>;
 		status = "disabled";
