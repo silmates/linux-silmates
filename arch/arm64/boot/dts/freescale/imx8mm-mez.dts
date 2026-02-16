@@ -352,17 +352,17 @@
 		compatible = "ti,ads1120";
 		#address-cells = <1>;
 		#size-cells = <0>;
-		ti,vref = <1>;		// Vref from REFP0 and REFN0 pins
+		ti,vref = <0>;		// internal reference
 		spi-max-frequency = <1000000>;
 		spi-cpha;
-/*
+
 		interrupt-parent = <&gpio1>;
-		interrupts = <5 IRQ_TYPE_EDGE_RISING>;
-*/
+		interrupts = <5 IRQ_TYPE_EDGE_FALLING>;
+
 		channel@0 {
 			reg = <0>;
 			ti,idac = <0>;
-			ti,idac-ua = <1000>;
+			ti,idac-ua = <250>;
 			ti,idac-mux = <1>;
 			ti,mux = <2>;
 			ti,gain = <1>;
@@ -373,7 +373,7 @@
 		channel@1 {
 			reg = <1>;
 			ti,idac = <0>;
-			ti,idac-ua = <1000>;
+			ti,idac-ua = <250>;
 			ti,idac-mux = <2>;
 			ti,mux = <4>;
 			ti,gain = <1>;

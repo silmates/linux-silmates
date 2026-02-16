@@ -242,8 +242,10 @@ struct ads1120_state {
 	unsigned int reset_delay_us;
 	unsigned int readback_len;
 	unsigned int operating_mode;
-
+	int irq;
+	bool use_irq;
 	struct completion completion;
+	struct mutex mutex;
 
 	struct {
 		u16 data[ADS1120_MAX_CHANNELS];
@@ -365,8 +367,9 @@ static int ads1120_set_data_rate(struct ads1120_state *st, unsigned int data_rat
 	int i, reg, ret,read;
 
 	for (i = 0; i < ARRAY_SIZE(ads1120_data_rate_normal_tbl); i++) {
-		if (ads1120_data_rate_normal_tbl[i].rate == data_rate)
+		if (ads1120_data_rate_normal_tbl[i].rate == data_rate) {
 			break;
+		}
 	}
 
 	if (i == ARRAY_SIZE(ads1120_data_rate_normal_tbl)) {
@@ -542,6 +545,20 @@ static int ads1120_config_reference_voltage(struct ads1120_state *st)
 	return ads1120_write_reg(st, ADS1120_CFG2_REG, reg);
 }
 
+static int ads1120_enable_drdy(struct ads1120_state *st)
+{
+	int reg, read;
+
+	read = ads1120_read_reg(st, ADS1120_CFG3_REG);
+	if (read < 0)
+		return read;
+
+	reg = read;
+	reg &= ~ADS1120_CFG3_DRDYM_MASK; /* enable DRDY */
+
+	return ads1120_write_reg(st, ADS1120_CFG3_REG, reg);
+}
+
 static int ads1120_initial_config(struct iio_dev *indio_dev)
 {
 	struct ads1120_state *st = iio_priv(indio_dev);
@@ -561,12 +578,48 @@ static int ads1120_initial_config(struct iio_dev *indio_dev)
 	if (ret)
 		return ret;
 
+	if (st->use_irq) {
+		ret = ads1120_enable_drdy(st);
+		if (ret)
+			return ret;
+	}
+
 	return ret;
+}
+
+static unsigned int ads1120_conv_timeout_ms(struct ads1120_state *st)
+{
+    unsigned int dr = st->data_rate;
+    unsigned int t;
+
+    /* fallback if rate not set */
+    if (!dr)
+        return 100;
+
+    /*
+     * conversion time = 1000 / SPS
+     * wait ~2 conversions + margin
+     */
+    t = DIV_ROUND_UP(2000, dr) + 2;
+
+    /* clamp to sane limits */
+    if (t < 5)
+        t = 5;
+    else if (t > 200)
+        t = 200;
+
+    return t;
 }
 
 static int ads1120_read_channel_data(struct ads1120_state *st,unsigned int channel, u16 * value)
 {
 	int ret;
+
+	ret = ads1120_exec_cmd(st, ADS1120_CMD_STOP);
+	if (ret) {
+		dev_err(&st->spi->dev, "STOP conversion failed : %d \n",channel);
+		return ret;
+	}
 
 	ret = ads1120_set_channel_mux(st, channel,st->channel_config[channel].mux);
 	if (ret) {
@@ -598,6 +651,18 @@ static int ads1120_read_channel_data(struct ads1120_state *st,unsigned int chann
 	if (ret)
 		return ret;
 
+	if (st->use_irq) {
+		reinit_completion(&st->completion);
+
+		ret = wait_for_completion_timeout(&st->completion,
+			msecs_to_jiffies(ads1120_conv_timeout_ms(st)));
+
+		if (!ret)
+			return -ETIMEDOUT;
+	} else {
+		msleep(ads1120_conv_timeout_ms(st));
+	}
+
 	ret = ads1120_read_data(st, 2);
 	if (ret)
 		return ret;
@@ -607,19 +672,21 @@ static int ads1120_read_channel_data(struct ads1120_state *st,unsigned int chann
 	return ads1120_exec_cmd(st, ADS1120_CMD_STOP);
 }
 
-static int ads1120_set_scale(struct ads1120_state *data,
+static int ads1120_set_scale(struct ads1120_state *st,
 			     struct iio_chan_spec const *chan,
 			     int scale)
 {
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(ads1120_pga_gain_tbl); i++) {
+		// dev_err(&st->spi->dev, "%s() - %d %d %d %d \n",__func__,
+		// 	i,ads1120_pga_gain_tbl[i].gain,scale,chan->channel);
 		if (ads1120_pga_gain_tbl[i].gain == scale) {
-			data->channel_config[chan->channel].pga_gain = scale;
+			st->channel_config[chan->channel].pga_gain = scale;
 			if(scale == 1){
-				data->channel_config[chan->channel].pga_bypass = true;
+				st->channel_config[chan->channel].pga_bypass = true;
 			} else {
-				data->channel_config[chan->channel].pga_bypass = false;
+				st->channel_config[chan->channel].pga_bypass = false;
 			}
 			return 0;
 		}
@@ -644,7 +711,6 @@ static int ads1120_set_idac(struct ads1120_state *data,
 	return -EINVAL;
 }
 
-
 static int ads1120_read_raw(struct iio_dev *indio_dev,
 	struct iio_chan_spec const *channel, int *value,
 	int *value2, long mask)
@@ -659,7 +725,9 @@ static int ads1120_read_raw(struct iio_dev *indio_dev,
 		// if (ret)
 		// 	return ret;
 
+		mutex_lock(&st->mutex);
 		ret = ads1120_read_channel_data(st, channel->channel, &local_value);
+		mutex_unlock(&st->mutex);
 		st->channel_config[channel->channel].raw_value = local_value;
 		*value = local_value;
 		// iio_device_release_direct_mode(indio_dev);
@@ -692,26 +760,34 @@ static int ads1120_write_raw(struct iio_dev *indio_dev,
 	struct ads1120_state *st = iio_priv(indio_dev);
 	int ret,i;
 
+	// dev_err(&st->spi->dev, "%s() - %d  %d %d \n",__func__,mask,value,value2);
+
 	switch (mask) {
 	case IIO_CHAN_INFO_SAMP_FREQ:
+		mutex_lock(&st->mutex);
 		for(i=0 ; i<indio_dev->num_channels ; i++)
 		{
 			ret = ads1120_set_data_rate(st, value);
 		}
+		mutex_unlock(&st->mutex);
 		return ret;
 
 	case IIO_CHAN_INFO_SCALE:
+		mutex_lock(&st->mutex);
 		for(i=0 ; i<indio_dev->num_channels ; i++)
 		{
 			ret = ads1120_set_scale(st, &indio_dev->channels[i], value);
 		}
+		mutex_unlock(&st->mutex);
 		return ret;
 
 	case IIO_CHAN_INFO_CALIBBIAS:
+		mutex_lock(&st->mutex);
 		for(i=0 ; i<indio_dev->num_channels ; i++)
 		{
 			ret = ads1120_set_idac(st, &indio_dev->channels[i], value);
 		}
+		mutex_unlock(&st->mutex);
 		return ret;
 
 	default:
@@ -797,20 +873,21 @@ static irqreturn_t ads1120_trigger_handler(int irq, void *private)
 
 	return IRQ_HANDLED;
 }
+*/
 
 static irqreturn_t ads1120_interrupt(int irq, void *private)
 {
 	struct iio_dev *indio_dev = private;
 	struct ads1120_state *st = iio_priv(indio_dev);
 
-	if (iio_buffer_enabled(indio_dev) && iio_trigger_using_own(indio_dev))
-		iio_trigger_poll(st->trig);
-	else
+	// if (iio_buffer_enabled(indio_dev) && iio_trigger_using_own(indio_dev))
+	// 	iio_trigger_poll(st->trig);
+	// else
 		complete(&st->completion);
 
 	return IRQ_HANDLED;
 }
-*/
+
 #define ADS1120_CHAN(__type, index, __address) ({ \
 	struct iio_chan_spec __chan = { \
 		.type = __type, \
@@ -1018,7 +1095,10 @@ static int ads1120_probe(struct spi_device *spi)
 	indio_dev->info = &ads1120_iio_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
-	// init_completion(&st->completion);
+	init_completion(&st->completion);
+
+	st->irq = spi->irq;
+	st->use_irq = st->irq > 0;
 
 	// if (spi->irq) {
 	// 	ret = devm_request_irq(&spi->dev, spi->irq,
@@ -1032,6 +1112,19 @@ static int ads1120_probe(struct spi_device *spi)
 	// 	dev_err(&spi->dev, "data ready IRQ missing\n");
 	// 	return -ENODEV;
 	// }
+
+	if (st->use_irq) {
+		ret = devm_request_threaded_irq(&spi->dev,
+										st->irq,
+										NULL,
+										ads1120_interrupt,
+										IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+										dev_name(&spi->dev),
+										indio_dev);
+		if (ret)
+			return ret;
+	}
+
 
 	// st->trig = devm_iio_trigger_alloc(&spi->dev, "%s-dev%d",
 	// 	indio_dev->name, iio_device_id(indio_dev));
@@ -1066,6 +1159,8 @@ static int ads1120_probe(struct spi_device *spi)
 		dev_err(&spi->dev, "initial configuration failed\n");
 		return ret;
 	}
+
+	dev_info(&spi->dev, "initialized.\n");
 
 	return devm_iio_device_register(&spi->dev, indio_dev);
 }
