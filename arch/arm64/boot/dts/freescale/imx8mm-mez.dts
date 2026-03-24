@@ -123,7 +123,7 @@
 		rotary-encoder,encoding = "gray";
 		rotary-encoder,relative-axis;
     };
-
+/*
 	panel: panel_lvds  {
 		compatible = "panel-lvds";
 		backlight = <&backlight>;
@@ -144,13 +144,6 @@
 			vback-porch = <23>;
 			vfront-porch = <12>;
 			vsync-len = <2>;
-/*
-			hsync-active = <0>;
-			vsync-active = <0>;
-
-			de-active = <0>;
-			pixelclk-active = <0>;
-*/
 		};
 
 		ports {
@@ -166,6 +159,7 @@
 			};
 		};
 	};
+*/
 };
 
 
@@ -352,17 +346,17 @@
 		compatible = "ti,ads1120";
 		#address-cells = <1>;
 		#size-cells = <0>;
-		ti,vref = <0>;		// internal reference
+		ti,vref = <1>;		// Vref from REFP0 and REFN0 pins
 		spi-max-frequency = <1000000>;
 		spi-cpha;
-
+/*
 		interrupt-parent = <&gpio1>;
-		interrupts = <5 IRQ_TYPE_EDGE_FALLING>;
-
+		interrupts = <5 IRQ_TYPE_EDGE_RISING>;
+*/
 		channel@0 {
 			reg = <0>;
 			ti,idac = <0>;
-			ti,idac-ua = <250>;
+			ti,idac-ua = <1000>;
 			ti,idac-mux = <1>;
 			ti,mux = <2>;
 			ti,gain = <1>;
@@ -373,7 +367,7 @@
 		channel@1 {
 			reg = <1>;
 			ti,idac = <0>;
-			ti,idac-ua = <250>;
+			ti,idac-ua = <1000>;
 			ti,idac-mux = <2>;
 			ti,mux = <4>;
 			ti,gain = <1>;
@@ -532,7 +526,7 @@
 		status = "okay";
 	};
 	*/
-
+/*
 	goodix_ts:gt911@14 {
 		compatible = "goodix,gt911";
 		reg = <0x14>;
@@ -578,6 +572,7 @@
 			};
 		};
     };
+*/
 };
 
 &pwm1 {
@@ -598,13 +593,37 @@
 
 &mipi_dsi {
 	status = "okay";
-
+/*
 	port@1 {
 		mipi_dsi_out: endpoint {
 			remote-endpoint = <&bridge_in>;
 			attach-bridge;
 		};
 	};
+*/
+	panel@0 {
+/*
+		compatible = "boe,ts101wxu-nwo";
+		panel-width-mm = <216>;
+		panel-height-mm = <135>;
+		rotation = <270>;
+*/
+/*		compatible = "boe,nt156whm-n44"; */
+		compatible = "auo,b156han02_1_0A";
+		panel-width-mm = <344>;
+		panel-height-mm = <193>;
+
+		reg = <0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_mipi_en>;
+		backlight = <&backlight>;
+		reset-gpio = <&gpio3 21 GPIO_ACTIVE_LOW>;
+		dsi-lanes = <4>;
+		video-mode = <2>;
+		status = "okay";
+
+	};
+
 };
 
 &sai2 {
