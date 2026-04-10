@@ -289,6 +289,7 @@
 		pinctrl_expander: expandergrp {
 			fsl,pins = <
 				MX8MM_IOMUXC_SAI5_RXD1_GPIO3_IO22		0x106
+				MX8MM_IOMUXC_ECSPI1_SS0_GPIO5_IO9		0x40000
 			>;
 		};
 
@@ -316,18 +317,12 @@
 			>;
 		};
 
-		pinctrl_ecspi1_cs: ecspi1cs {
+		pinctrl_ads1120: ads1120gpio {
 			fsl,pins = <
-				MX8MM_IOMUXC_ECSPI1_SS0_GPIO5_IO9		0x40000
+				MX8MM_IOMUXC_ECSPI2_SS0_GPIO5_IO13		0x106
+				MX8MM_IOMUXC_SAI1_TXC_GPIO4_IO11		0x40000
 			>;
 		};
-
-		pinctrl_ads1120_irq: ads1120irq {
-			fsl,pins = <
-				MX8MM_IOMUXC_GPIO1_IO05_GPIO1_IO5		0x40000
-			>;
-		};
-
 	};
 };
 
@@ -337,8 +332,8 @@
 	#size-cells = <0>;
 	fsl,spi-num-chipselects = <1>;
 	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_ecspi1 &pinctrl_ecspi1_cs &pinctrl_ads1120_irq>;
-	cs-gpios = <&gpio5 9 GPIO_ACTIVE_LOW>;
+	pinctrl-0 = <&pinctrl_ecspi1 &pinctrl_ads1120>;
+	cs-gpios = <&gpio5 13 GPIO_ACTIVE_LOW>;
 	status = "okay";
 
 	ads1120: adc@0 {
@@ -346,17 +341,18 @@
 		compatible = "ti,ads1120";
 		#address-cells = <1>;
 		#size-cells = <0>;
-		ti,vref = <1>;		// Vref from REFP0 and REFN0 pins
+		ti,vref = <0>;		// internal reference
 		spi-max-frequency = <1000000>;
 		spi-cpha;
-/*
-		interrupt-parent = <&gpio1>;
-		interrupts = <5 IRQ_TYPE_EDGE_RISING>;
-*/
+
+		interrupt-parent = <&gpio4>;
+		interrupts = <11 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "ads1120_irq";
+
 		channel@0 {
 			reg = <0>;
 			ti,idac = <0>;
-			ti,idac-ua = <1000>;
+			ti,idac-ua = <250>;
 			ti,idac-mux = <1>;
 			ti,mux = <2>;
 			ti,gain = <1>;
@@ -367,7 +363,7 @@
 		channel@1 {
 			reg = <1>;
 			ti,idac = <0>;
-			ti,idac-ua = <1000>;
+			ti,idac-ua = <250>;
 			ti,idac-mux = <2>;
 			ti,mux = <4>;
 			ti,gain = <1>;
@@ -414,25 +410,17 @@
 
 &i2c2 {
 
-    usb_hub: usb2517@2c {
-		compatible = "microchip,usb2517";
+    usb_hub: usb2514@2c {
+		compatible = "microchip,usb2514b";
 		reg = <0x2c>;
 		status = "okay";
+/*		reset-gpios = <&gpio_expander 12 GPIO_ACTIVE_LOW>;*/
+
 		vdd-supply = <&reg_system_3v3>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_expander>;
-		reset-gpios = <&gpio3 22 GPIO_ACTIVE_LOW>;
-
-/*		disable-hi-speed;*/
-
 		self-powered;
 		individual-sensing;
-
-/*		single-tt;*/
 		oc-delay-us = <16000>;
-
 		multi-tt;
-/*		disable-eop;*/
 		individual-port-switching;
 		dynamic-power-switching;
 		compound-device;
@@ -442,57 +430,158 @@
 		string-support;
 
 		/* add printer,qwerty,pmu,ft4232 */
-		non-removable-ports = <3 6 7>; 
-		bp-disabled-ports = <3 6 7>;
+		
+		non-removable-ports = <1 2>;
+		bp-disabled-ports = <1 2>;
 
 		bp-max-total-current-microamp = <500000>;
 		sp-max-total-current-microamp = <100000>;
 		sp-max-removable-current-microamp = <100000>;
 		bp-max-removable-current-microamp = <500000>;
-
-/*
-		sp-disabled-ports = <1 2 4 5>;
-		bp-disabled-ports = <3 6 7>;
-*/
-/*
-		non-removable-ports = <1 2 3 6 7>;
-		sp-disabled-ports = <>;
-		bp-disabled-ports = <>;
-		sp-max-total-current-microamp
-		bp-max-total-current-microamp
-		sp-max-removable-current-microamp
-		bp-max-removable-current-microamp
-*/		
-
+		
 		manufacturer = "Silmates";
 		product = "MultiParaMonitor";
 		serial = "1";
     };
 
-	gpio_expander: io-expander@20 {
+	gpio_expander: io-expander@21 {
+		compatible = "nxp,pca6416";
+		reg = <0x21>;
+		gpio-controller;
+		#gpio-cells = <2>;
+
+		vcc-supply = <&reg_system_3v3>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_expander>;
+		reset-gpios = <&gpio3 22 GPIO_ACTIVE_LOW>;
+/*
+		interrupt-parent = <&gpio5>;
+		interrupts = <9 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "kts1622_irq";
+*/
+		gpio-line-names = 
+			"nibp_gpio1",
+			"spo2_reset",
+			"spo2_power_en",
+			"ft4232h2_rst",
+			"mod_i2c_sw_rst",
+			"ext_mod_12v_en",
+			"nibp_power_en",
+			"ecg_power_en",
+			"mod_ioexp_rst",
+			"mod_i2c_sw_irq",
+			"mod_ioexp_irq",
+			"ft4232h1_rst",
+			"usbhub_rst",
+			"na",
+			"na",
+			"na";
+/*
+		usb-hub-reset-hog {
+			gpio-hog;
+			gpios = <12 GPIO_ACTIVE_LOW>;
+			output-high;
+			line-name = "usbhub_rst";
+		};
+*/
+/*
+		ft4232h1-reset-hog {
+			gpio-hog;
+			gpios = <11 GPIO_ACTIVE_LOW>;
+			output-high;
+			line-name = "ft4232h1_rst";
+		};
+*/
+/*
+		ft4232h2-reset-hog {
+			gpio-hog;
+			gpios = <3 GPIO_ACTIVE_LOW>;
+			output-high;
+			line-name = "ft4232h2_rst";
+		};
+*/
+	};
+
+	gpio_expander_mod: io-expander@20 {
 		compatible = "nxp,pca6416";
 		reg = <0x20>;
 		gpio-controller;
 		#gpio-cells = <2>;
-/*		vcc-supply = <&reg_system_3v3>;*/
 
+		vcc-supply = <&reg_system_3v3>;
+
+		reset-gpios = <&gpio_expander 8 GPIO_ACTIVE_LOW>;
+/*
+		interrupt-parent = <&gpio_expander>;
+		interrupts = <10 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "kts1622_mod_irq";
+*/
 		gpio-line-names = 
-			"spo2_power_en",
-			"ibp_gpio1",
-			"ibp_power_en",
-			"agm_gpio1",
-			"agm_power_en",
-			"co_gpio1",
-			"co_power_en",
-			"bis_gpio1",
-			"bis_power_en",
-			"ecg_gpio1",
-			"ecg_power_en",
-			"nibp_gpio1",
-			"nibp_power_en",
-			"etco2_gpio1",
-			"etco2_power_en",
+			"mod_gpio1",
+			"mod_gpio2",
+			"mod_gpio3",
+			"mod_gpio4",
+			"mod_gpio5",
+			"mod_gpio6",
+			"na",
+			"na",
+			"na",
+			"na",
+			"na",
+			"na",
+			"na",
+			"na",
+			"na",
 			"na";
+	};
+
+	i2c_switch: pca9545@71 {
+		compatible = "nxp,pca9545";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg = <0x71>;
+
+		reset-gpios = <&gpio_expander 4 GPIO_ACTIVE_LOW>;
+/*
+		interrupt-parent = <&gpio_expander>;
+		interrupts = <9 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+*/
+		i2c@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <2>;
+
+			mod1_eeprom: eeprom@53 {
+				compatible = "atmel,24c08";
+				reg = <0x53>;
+			};
+		};
+
+		i2c@2 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <2>;
+
+			mod2_eeprom: eeprom@53 {
+				compatible = "atmel,24c08";
+				reg = <0x53>;
+			};
+		};
+
+		i2c@3 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <2>;
+
+			mod3_eeprom: eeprom@53 {
+				compatible = "atmel,24c08";
+				reg = <0x53>;
+			};
+		};
+
 	};
 };
 
@@ -505,6 +594,8 @@
 		reg = <0x5d>;
 		interrupt-parent = <&gpio4>;
 		interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "gt928_irq";
+
 		irq-gpios = <&gpio4 0 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&gpio4 1 GPIO_ACTIVE_HIGH>;
 		touchscreen-inverted-x = <1>;
@@ -520,6 +611,8 @@
 		reg = <0x41>;
 		interrupt-parent = <&gpio4>;
 		interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "ili251x_irq";
+
 		reset-gpios = <&gpio4 1 GPIO_ACTIVE_HIGH>;
 		touchscreen-size-x = <1920>;
 		touchscreen-size-y = <1080>;
@@ -534,6 +627,8 @@
 		pinctrl-0 = <&pinctrl_touchscreen>;
 		interrupt-parent = <&gpio4>;
 		interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "gt911_irq";
+
 		irq-gpios = <&gpio4 0 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&gpio4 1 GPIO_ACTIVE_HIGH>;
 		touchscreen-size-x = <1024>;
@@ -719,7 +814,7 @@
 		compatible = "brcm,bcm4329-fmac";
 		interrupt-parent = <&gpio2>;
 		interrupts = <9 IRQ_TYPE_LEVEL_LOW>;
-		interrupt-names = "host-wake";
+		interrupt-names = "brcmf-host-wake";
 	};
 };
 
