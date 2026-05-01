@@ -49,16 +49,6 @@
 			enable-active-high;
 		};
 
-		reg_usbotg1_vbus: regulator-usbotg1 {
-			compatible = "regulator-fixed";
-			regulator-name = "usbotg_vbus";
-			regulator-min-microvolt = <5000000>;
-			regulator-max-microvolt = <5000000>;
-/*			gpio = <&gpio1 12 GPIO_ACTIVE_HIGH>;*/
-			off-on-delay = <20000>;
-			enable-active-high;
-		};
-
 		/* add construct for "fmac" to control WL_REG_ON signal */
 		usdhc1_pwrseq: usdhc1_pwrseq {
 			compatible = "mmc-pwrseq-simple";
@@ -198,7 +188,7 @@
 
 		pinctrl_touchscreen: touchscreengrp {
 			fsl,pins = <
-				MX8MM_IOMUXC_SAI1_RXFS_GPIO4_IO0		0x40000
+				MX8MM_IOMUXC_SAI1_RXFS_GPIO4_IO0		0x1c4
 				MX8MM_IOMUXC_SAI1_RXC_GPIO4_IO1			0x1c4
 			>;
 		};
@@ -379,7 +369,7 @@
 		compatible = "st,24c256", "atmel,24c256";
 		pagesize = <64>;
 		reg = <0x53>;
-        	size = <32768>;
+		size = <32768>;
 		status = "okay";
     };
     
@@ -418,7 +408,7 @@
 
 		vdd-supply = <&reg_system_3v3>;
 		self-powered;
-		individual-sensing;
+/*		individual-sensing;*/
 		oc-delay-us = <16000>;
 		multi-tt;
 		individual-port-switching;
@@ -426,19 +416,20 @@
 		compound-device;
 		led-usb-mode;
 
-		power-on-time-ms = <30>;
+		power-on-time-ms = <50>;
 		string-support;
 
 		/* add printer,qwerty,pmu,ft4232 */
 		
 		non-removable-ports = <1 2>;
-		bp-disabled-ports = <1 2>;
+/*		bp-disabled-ports = <1 2>; */
 
-		bp-max-total-current-microamp = <500000>;
 		sp-max-total-current-microamp = <100000>;
 		sp-max-removable-current-microamp = <100000>;
+/*
+		bp-max-total-current-microamp = <500000>;
 		bp-max-removable-current-microamp = <500000>;
-		
+*/		
 		manufacturer = "Silmates";
 		product = "MultiParaMonitor";
 		serial = "1";
@@ -554,9 +545,9 @@
 			#size-cells = <0>;
 			reg = <2>;
 
-			mod1_eeprom: eeprom@53 {
+			mod1_eeprom: eeprom@57 {
 				compatible = "atmel,24c08";
-				reg = <0x53>;
+				reg = <0x57>;
 			};
 		};
 
@@ -565,9 +556,9 @@
 			#size-cells = <0>;
 			reg = <2>;
 
-			mod2_eeprom: eeprom@53 {
+			mod2_eeprom: eeprom@57 {
 				compatible = "atmel,24c08";
-				reg = <0x53>;
+				reg = <0x57>;
 			};
 		};
 
@@ -576,9 +567,9 @@
 			#size-cells = <0>;
 			reg = <2>;
 
-			mod3_eeprom: eeprom@53 {
+			mod3_eeprom: eeprom@57 {
 				compatible = "atmel,24c08";
-				reg = <0x53>;
+				reg = <0x57>;
 			};
 		};
 
@@ -603,7 +594,7 @@
 		status = "okay";
 	};
 	*/
-/*
+
 	ili2511_ts: ili2511@41 {
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_touchscreen>;
@@ -613,12 +604,14 @@
 		interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
 		interrupt-names = "ili251x_irq";
 
-		reset-gpios = <&gpio4 1 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio4 1 GPIO_ACTIVE_LOW>;
+
 		touchscreen-size-x = <1920>;
 		touchscreen-size-y = <1080>;
+
 		status = "okay";
 	};
-	*/
+	
 /*
 	goodix_ts:gt911@14 {
 		compatible = "goodix,gt911";
@@ -753,12 +746,15 @@
 };
 
 &usbotg1 {
-	dr_mode = "otg";
-	status = "disabled";
+	dr_mode = "host";
+	status = "okay";
+/*
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_usbotg1>;
+*/
 	vbus-supply = <&reg_system_3v3>;
 	disable-over-current;
+	/delete-property/ usb-role-switch;
 };
 
 &usbotg2 {

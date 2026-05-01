@@ -47,6 +47,10 @@ struct ili210x {
 	bool stop;
 };
 
+
+/* ILI2511 uses 14-bit coordinates */
+#define ILI251X_RAW_MAX        16383
+
 static int ili210x_read_reg(struct i2c_client *client,
 			    u8 reg, void *buf, size_t len)
 {
@@ -249,8 +253,10 @@ static bool ili251x_touchdata_to_coords(const u8 *touchdata,
 	if (!(val & BIT(15)))	/* Touch indication */
 		return false;
 
-	*x = val & 0x3fff;
-	*y = get_unaligned_be16(touchdata + 1 + (finger * 5) + 2);
+	// *x = val & 0x3fff;
+	// *y = get_unaligned_be16(touchdata + 1 + (finger * 5) + 2);
+    *x = val & 0x3fff;
+    *y = get_unaligned_be16(touchdata + 1 + (finger * 5) + 2) & 0x3fff;
 	*z = touchdata[1 + (finger * 5) + 4];
 
 	return true;
@@ -267,9 +273,13 @@ static const struct ili2xxx_chip ili251x_chip = {
 	.parse_touch_data	= ili251x_touchdata_to_coords,
 	.continue_polling	= ili251x_check_continue_polling,
 	.max_touches		= 10,
+    .resolution         = 16384, /* 14-bit controller */
 	.has_calibrate_reg	= true,
 	.has_pressure_reg	= true,
 };
+
+#define ILI210X_RAW_MAX_X 16384
+#define ILI210X_RAW_MAX_Y 16384
 
 static bool ili210x_report_events(struct ili210x *priv, u8 *touchdata)
 {
@@ -277,13 +287,30 @@ static bool ili210x_report_events(struct ili210x *priv, u8 *touchdata)
 	int i;
 	bool contact = false, touch;
 	unsigned int x = 0, y = 0, z = 0;
+    unsigned int sx, sy;
 
 	for (i = 0; i < priv->chip->max_touches; i++) {
 		touch = priv->chip->parse_touch_data(touchdata, i, &x, &y, &z);
 
 		input_mt_slot(input, i);
 		if (input_mt_report_slot_state(input, MT_TOOL_FINGER, touch)) {
-			touchscreen_report_pos(input, &priv->prop, x, y, true);
+			// touchscreen_report_pos(input, &priv->prop, x, y, true);
+			/* Scale raw 14-bit coordinates to screen resolution */
+			sx = x * priv->prop.max_x / ILI251X_RAW_MAX;
+			sy = y * priv->prop.max_y / ILI251X_RAW_MAX;
+
+			/* Clamp */
+			if (sx > priv->prop.max_x)
+					sx = priv->prop.max_x;
+			if (sy > priv->prop.max_y)
+					sy = priv->prop.max_y;
+
+			touchscreen_report_pos(input, &priv->prop, sx, sy, true);
+
+			/* Keep single-touch axes in sync */
+			input_report_abs(input, ABS_X, sx);
+			input_report_abs(input, ABS_Y, sy);
+
 			if (priv->chip->has_pressure_reg)
 				input_report_abs(input, ABS_MT_PRESSURE, z);
 			contact = true;
@@ -444,9 +471,11 @@ static int ili210x_i2c_probe(struct i2c_client *client,
 	input->id.bustype = BUS_I2C;
 
 	/* Multi touch */
-	max_xy = (chip->resolution ?: SZ_64K) - 1;
-	input_set_abs_params(input, ABS_MT_POSITION_X, 0, max_xy, 0, 0);
-	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, max_xy, 0, 0);
+	// max_xy = (chip->resolution ?: SZ_64K) - 1;
+	// input_set_abs_params(input, ABS_MT_POSITION_X, 0, max_xy, 0, 0);
+	// input_set_abs_params(input, ABS_MT_POSITION_Y, 0, max_xy, 0, 0);
+	input_set_abs_params(input, ABS_MT_POSITION_X, 0, 0, 0, 0);
+	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, 0, 0, 0);
 	if (priv->chip->has_pressure_reg)
 		input_set_abs_params(input, ABS_MT_PRESSURE, 0, 0xa, 0, 0);
 	touchscreen_parse_properties(input, true, &priv->prop);
