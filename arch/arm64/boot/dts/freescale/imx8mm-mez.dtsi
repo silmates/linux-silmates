@@ -194,6 +194,7 @@
 	/* Microchip 24AA025E48T-I/OT containing MAC for DHCOM ETH1 */
 	eeprom_som@50 {
 		compatible = "microchip,24c02";
+		vcc-supply = <&buck4_reg>;
 		pagesize = <16>;
 		read-only;
 		reg = <0x50>;

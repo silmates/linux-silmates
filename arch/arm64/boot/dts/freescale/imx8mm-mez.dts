@@ -66,6 +66,7 @@
 			reset-delay-us = <1000>;
 			#reset-cells = <0>;
 		};
+
 	};
 
 	sound_card: sound-card {
@@ -367,6 +368,7 @@
 &i2c1 {
     eeprom_bb: eeprom@53 {
 		compatible = "st,24c256", "atmel,24c256";
+		vcc-supply = <&reg_system_3v3>;
 		pagesize = <64>;
 		reg = <0x53>;
 		size = <32768>;
@@ -424,8 +426,8 @@
 		non-removable-ports = <1 2>;
 /*		bp-disabled-ports = <1 2>; */
 
-		sp-max-total-current-microamp = <100000>;
-		sp-max-removable-current-microamp = <100000>;
+		sp-max-total-current-microamp = <1000000>;
+		sp-max-removable-current-microamp = <1000000>;
 /*
 		bp-max-total-current-microamp = <500000>;
 		bp-max-removable-current-microamp = <500000>;
