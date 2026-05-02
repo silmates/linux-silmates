@@ -420,7 +420,7 @@ static int ili210x_i2c_probe(struct i2c_client *client,
 	struct gpio_desc *reset_gpio;
 	struct input_dev *input;
 	int error;
-	unsigned int max_xy;
+	// unsigned int max_xy;
 
 	dev_dbg(dev, "Probing for ILI210X I2C Touschreen driver");
 
